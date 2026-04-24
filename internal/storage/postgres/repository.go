@@ -38,3 +38,14 @@ func (r *Repository) Ping(ctx context.Context) error {
 func (r *Repository) WithTransaction(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, r.pool, fn)
 }
+
+// CountMatches returns row counts useful for monitoring the cutover.
+func (r *Repository) CountMatches(ctx context.Context) (total, parsed, players int64, err error) {
+	err = r.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM matches),
+			(SELECT COUNT(*) FROM matches WHERE version IS NOT NULL),
+			(SELECT COUNT(*) FROM player_matches)
+	`).Scan(&total, &parsed, &players)
+	return
+}

@@ -286,3 +286,128 @@ func TestIngestMatch_WithRawJSONBFields(t *testing.T) {
 	).Scan(&damage))
 	require.JSONEq(t, `{"npc_dota_hero_axe":1500}`, string(damage))
 }
+
+func TestFilterUnknownMatchIDs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, cleanup := setupPostgresContainer(ctx, t)
+	defer cleanup()
+
+	repo := NewRepositoryFromPool(pool)
+	require.NoError(t, repo.Migrate(ctx))
+
+	// Seed a few known matches.
+	for _, id := range []int64{100, 200, 300} {
+		m := baseMatch(id, 1710000000+id)
+		require.NoError(t, repo.IngestMatch(ctx, m))
+	}
+
+	tests := []struct {
+		name    string
+		input   []int64
+		wantLen int
+		wantSet map[int64]bool
+	}{
+		{
+			name:    "all known",
+			input:   []int64{100, 200, 300},
+			wantLen: 0,
+			wantSet: map[int64]bool{},
+		},
+		{
+			name:    "all unknown",
+			input:   []int64{101, 201, 301},
+			wantLen: 3,
+			wantSet: map[int64]bool{101: true, 201: true, 301: true},
+		},
+		{
+			name:    "mixed",
+			input:   []int64{100, 101, 200, 999},
+			wantLen: 2,
+			wantSet: map[int64]bool{101: true, 999: true},
+		},
+		{
+			name:    "empty input",
+			input:   nil,
+			wantLen: 0,
+			wantSet: map[int64]bool{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.FilterUnknownMatchIDs(ctx, tc.input)
+			require.NoError(t, err)
+			require.Len(t, got, tc.wantLen)
+			for _, id := range got {
+				require.True(t, tc.wantSet[id], "unexpected id %d", id)
+			}
+		})
+	}
+}
+
+func TestIngestMatch_AutoCreatesTeamAndLeagueStubs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, cleanup := setupPostgresContainer(ctx, t)
+	defer cleanup()
+
+	repo := NewRepositoryFromPool(pool)
+	require.NoError(t, repo.Migrate(ctx))
+
+	m := baseMatch(7800000007, 1710000007)
+	m.RadiantTeamID = i64(777001)
+	m.DireTeamID = i64(777002)
+	m.LeagueID = i32(999001)
+
+	require.NoError(t, repo.IngestMatch(ctx, m))
+
+	var teamCount int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM teams WHERE team_id IN (777001, 777002)",
+	).Scan(&teamCount))
+	require.Equal(t, 2, teamCount)
+
+	var leagueCount int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM leagues WHERE leagueid = 999001",
+	).Scan(&leagueCount))
+	require.Equal(t, 1, leagueCount)
+
+	var tmCount int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM team_matches WHERE match_id = $1", m.MatchID,
+	).Scan(&tmCount))
+	require.Equal(t, 2, tmCount)
+}
+
+func TestIngestMatch_SeededReferenceData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+	pool, cleanup := setupPostgresContainer(ctx, t)
+	defer cleanup()
+
+	repo := NewRepositoryFromPool(pool)
+	require.NoError(t, repo.Migrate(ctx))
+
+	var heroCount int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM heroes").Scan(&heroCount))
+	require.GreaterOrEqual(t, heroCount, 50, "expected >=50 heroes seeded")
+
+	var patchCount int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM patches").Scan(&patchCount))
+	require.GreaterOrEqual(t, patchCount, 50, "expected >=50 patches seeded")
+
+	var gameModeCount int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM game_modes").Scan(&gameModeCount))
+	require.GreaterOrEqual(t, gameModeCount, 10, "expected >=10 game_modes seeded")
+
+	var lobbyTypeCount int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM lobby_types").Scan(&lobbyTypeCount))
+	require.GreaterOrEqual(t, lobbyTypeCount, 4, "expected >=4 lobby_types seeded")
+}

@@ -56,7 +56,7 @@ func TestEnsureSchema(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -81,7 +81,7 @@ func TestUpsertParsedData(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -101,7 +101,7 @@ func TestUpsertParsedDataConflict(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -143,7 +143,7 @@ func TestFilterNewIDs(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -175,7 +175,7 @@ func TestFilterNewIDsEmpty(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -195,7 +195,7 @@ func TestFilterNewIDsAllNew(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)
@@ -215,7 +215,7 @@ func TestFilterNewIDsAllExist(t *testing.T) {
 	pool, cleanup := setupPostgresContainer(ctx, t)
 	defer cleanup()
 
-	repo := NewRepositoryFromPool(pool)
+	repo := NewLegacyRepositoryFromPool(pool)
 
 	if err := repo.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema() error = %v", err)

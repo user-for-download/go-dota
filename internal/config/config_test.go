@@ -11,7 +11,6 @@ func TestLoadDefaults(t *testing.T) {
 	os.Unsetenv("TARGET_API_URL")
 	os.Unsetenv("COLLECTOR_WORKERS")
 	os.Unsetenv("PARSER_WORKERS")
-	os.Unsetenv("FETCH_INTERVAL_SEC")
 	os.Unsetenv("PROXY_REFRESH_MIN")
 	os.Unsetenv("PROXY_LOCAL_FILE")
 	os.Unsetenv("SKIP_TLS_VERIFY")
@@ -33,7 +32,6 @@ func TestLoadDefaults(t *testing.T) {
 		{cfg.TargetAPIURL, "https://httpbin.org/json"},
 		{cfg.CollectorWorkers, 10},
 		{cfg.ParserWorkers, 5},
-		{cfg.FetchIntervalSec, 5},
 		{cfg.ProxyRefreshMin, 15},
 		{cfg.ProxyLocalFile, "deployments/proxy.json"},
 		{cfg.SkipTLSVerify, false},
@@ -51,18 +49,17 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadWithEnvOverrides(t *testing.T) {
 	envs := map[string]string{
-		"REDIS_URL":          "redis://custom:6379/1",
-		"POSTGRES_URL":      "postgres://user:pass@custom:5432/db",
-		"TARGET_API_URL":    "https://example.com/api",
+		"REDIS_URL":       "redis://custom:6379/1",
+		"POSTGRES_URL":   "postgres://user:pass@custom:5432/db",
+		"TARGET_API_URL":  "https://example.com/api",
 		"COLLECTOR_WORKERS":  "20",
 		"PARSER_WORKERS":    "8",
-		"FETCH_INTERVAL_SEC": "10",
 		"PROXY_REFRESH_MIN": "30",
-		"PROXY_LOCAL_FILE":  "/custom/path/proxy.json",
-		"SKIP_TLS_VERIFY":   "true",
-		"MONITOR_PORT":      "9090",
-		"DLQ_BATCH_SIZE":    "200",
-		"DLQ_MAX_PER_TICK":  "1000",
+		"PROXY_LOCAL_FILE": "/custom/path/proxy.json",
+		"SKIP_TLS_VERIFY":  "true",
+		"MONITOR_PORT":     "9090",
+		"DLQ_BATCH_SIZE": "200",
+		"DLQ_MAX_PER_TICK": "1000",
 	}
 	for k, v := range envs {
 		os.Setenv(k, v)
@@ -83,7 +80,6 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 		{cfg.TargetAPIURL, "https://example.com/api"},
 		{cfg.CollectorWorkers, 20},
 		{cfg.ParserWorkers, 8},
-		{cfg.FetchIntervalSec, 10},
 		{cfg.ProxyRefreshMin, 30},
 		{cfg.ProxyLocalFile, "/custom/path/proxy.json"},
 		{cfg.SkipTLSVerify, true},

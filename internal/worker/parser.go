@@ -3,11 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/user-for-download/go-dota/internal/models"
 	postgresstore "github.com/user-for-download/go-dota/internal/storage/postgres"
 	redisstore "github.com/user-for-download/go-dota/internal/storage/redis"
@@ -15,45 +16,26 @@ import (
 
 type Parser struct {
 	redisClient   *redisstore.Client
-	legacyRepo    *postgresstore.LegacyRepository
-	numWorkers    int
-	logger        *slog.Logger
-	recoverDLQ    bool
+	pgRepo      *postgresstore.Repository
+	numWorkers  int
+	logger     *slog.Logger
 	dlqBatchSize  int
 	dlqMaxPerTick int
 }
 
 func NewParser(
 	redisClient *redisstore.Client,
-	legacyRepo *postgresstore.LegacyRepository,
-	numWorkers int,
-	logger *slog.Logger,
-) *Parser {
-	return &Parser{
-		redisClient:   redisClient,
-		legacyRepo:    legacyRepo,
-		numWorkers:    numWorkers,
-		logger:        logger,
-		recoverDLQ:    true,
-		dlqBatchSize:  100,
-		dlqMaxPerTick: 500,
-	}
-}
-
-func NewParserWithConfig(
-	redisClient *redisstore.Client,
-	legacyRepo *postgresstore.LegacyRepository,
+	pgRepo *postgresstore.Repository,
 	numWorkers int,
 	logger *slog.Logger,
 	dlqBatchSize, dlqMaxPerTick int,
 ) *Parser {
 	return &Parser{
 		redisClient:   redisClient,
-		legacyRepo:    legacyRepo,
-		numWorkers:    numWorkers,
-		logger:        logger,
-		recoverDLQ:    true,
-		dlqBatchSize:  dlqBatchSize,
+		pgRepo:      pgRepo,
+		numWorkers:  numWorkers,
+		logger:    logger,
+		dlqBatchSize: dlqBatchSize,
 		dlqMaxPerTick: dlqMaxPerTick,
 	}
 }
@@ -61,14 +43,12 @@ func NewParserWithConfig(
 func (p *Parser) Run(ctx context.Context) error {
 	p.logger.Info("parser starting workers", "count", p.numWorkers)
 
-	if p.recoverDLQ {
-		p.logger.Info("attempting DLQ recovery on startup")
-		count, err := p.redisClient.RequeueFailedTasks(ctx)
-		if err != nil {
-			p.logger.Warn("DLQ recovery failed", "error", err)
-		} else if count > 0 {
-			p.logger.Info("DLQ recovery succeeded", "requeued", count)
-		}
+p.logger.Info("attempting DLQ recovery on startup")
+	count, err := p.redisClient.RequeueFailedTasks(ctx)
+	if err != nil {
+		p.logger.Warn("DLQ recovery failed", "error", err)
+	} else if count > 0 {
+		p.logger.Info("DLQ recovery succeeded", "requeued", count)
 	}
 
 	go p.periodicDLQDrain(ctx)
@@ -149,7 +129,11 @@ func (p *Parser) worker(ctx context.Context, id int) {
 			if idleCounter%60 == 0 {
 				p.logger.Warn("no tasks in queue, waiting...", "worker_id", id)
 			}
-			time.Sleep(time.Second)
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
 			continue
 		}
 		idleCounter = 0
@@ -159,66 +143,45 @@ func (p *Parser) worker(ctx context.Context, id int) {
 }
 
 func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
+	log := p.logger.With("task_id", taskID, "worker_id", workerID)
+
 	data, err := p.redisClient.GetRawData(ctx, taskID)
 	if err != nil {
-		p.logger.Error("get raw data failed", "task_id", taskID, "error", err)
+		log.Error("get raw data failed", "error", err)
 		_ = p.redisClient.ExtendRawDataTTL(ctx, taskID)
 		_ = p.redisClient.IncrementRetryCount(ctx, taskID)
 		_ = p.redisClient.PushFailedTask(ctx, taskID)
 		return
 	}
 	if data == nil {
-		p.logger.Warn("raw data expired or missing, discarding task", "task_id", taskID)
+		log.Warn("raw data expired or missing, discarding task")
 		return
 	}
 
-	var apiResp models.APIResponse
-	if err := json.Unmarshal(data, &apiResp); err != nil {
-		p.logger.Error("unmarshal failed", "task_id", taskID, "error", err)
-		_ = p.redisClient.ExtendRawDataTTL(ctx, taskID)
-		_ = p.redisClient.IncrementRetryCount(ctx, taskID)
-		_ = p.redisClient.PushFailedTask(ctx, taskID)
-		return
-	}
-
-	if apiResp.ID == "" {
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(data, &raw); err == nil {
-			if idBytes, ok := raw["id"]; ok {
-				var idStr string
-				if json.Unmarshal(idBytes, &idStr) == nil && idStr != "" {
-					apiResp.ID = idStr
-				}
-			}
-			if apiResp.ID == "" {
-				if midBytes, ok := raw["match_id"]; ok {
-					var idNum json.Number
-					if json.Unmarshal(midBytes, &idNum) == nil {
-						idInt, err := idNum.Int64()
-						if err == nil {
-							apiResp.ID = strconv.FormatInt(idInt, 10)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if apiResp.ID == "" {
-		p.logger.Error("no ID found in payload, discarding task (malformed data)",
-			"task_id", taskID, "payload_size", len(data))
-		_ = p.redisClient.DeleteRawData(ctx, taskID)
+	var m models.Match
+	if err := json.Unmarshal(data, &m); err != nil {
+		log.Error("unmarshal match payload failed (poison pill)", "error", err)
+		_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
 		_ = p.redisClient.DeleteRetryCount(ctx, taskID)
 		return
 	}
 
-	if apiResp.Payload == nil {
-		apiResp.Payload = data
+	if err := m.Validate(); err != nil {
+		log.Error("match validation failed (poison pill)", "match_id", m.MatchID, "error", err)
+		_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
+		_ = p.redisClient.DeleteRetryCount(ctx, taskID)
+		return
 	}
 
-	if err := p.legacyRepo.UpsertParsedData(ctx, apiResp.ID, apiResp.Payload); err != nil {
-		p.logger.Error("legacy db upsert failed",
-			"task_id", taskID, "external_id", apiResp.ID, "error", err)
+	if err := p.pgRepo.IngestMatch(ctx, &m); err != nil {
+		log.Error("ingest match failed", "match_id", m.MatchID, "error", err)
+
+		if isPermanentIngestError(err) {
+			_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
+			_ = p.redisClient.DeleteRetryCount(ctx, taskID)
+			return
+		}
+
 		_ = p.redisClient.ExtendRawDataTTL(ctx, taskID)
 		_ = p.redisClient.IncrementRetryCount(ctx, taskID)
 		_ = p.redisClient.PushFailedTask(ctx, taskID)
@@ -226,11 +189,20 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 	}
 
 	if err := p.redisClient.DeleteRawData(ctx, taskID); err != nil {
-		p.logger.Warn("delete raw data failed", "task_id", taskID, "error", err)
+		log.Warn("delete raw data failed", "error", err)
 	}
-
 	_ = p.redisClient.DeleteRetryCount(ctx, taskID)
 
-	p.logger.Info("task parsed and stored",
-		"task_id", taskID, "external_id", apiResp.ID, "worker_id", workerID)
+	log.Info("match ingested", "match_id", m.MatchID, "is_parsed", m.IsParsed(), "players", len(m.Players))
+}
+
+func isPermanentIngestError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503", "23514", "23502":
+			return true
+		}
+	}
+	return false
 }

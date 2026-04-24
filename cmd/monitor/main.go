@@ -31,7 +31,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Redis
 	opts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		log.Error("invalid redis url", "error", err)
@@ -49,7 +48,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Main DB
 	mainPool, err := pgxpool.New(ctx, cfg.PostgresURL)
 	if err != nil {
 		log.Error("failed to connect to postgres", "error", err)
@@ -62,23 +60,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Legacy DB
-	legacyPool, err := pgxpool.New(ctx, cfg.LegacyPostgresURL)
-	if err != nil {
-		log.Error("failed to connect to legacy postgres", "error", err)
-		os.Exit(1)
-	}
-	defer legacyPool.Close()
-
-	if err := legacyPool.Ping(ctx); err != nil {
-		log.Error("failed to ping legacy postgres", "error", err)
-		os.Exit(1)
-	}
-
 	repo := postgres.NewRepositoryFromPool(mainPool)
-	legacyRepo := postgres.NewLegacyRepositoryFromPool(legacyPool)
 
-	h := &handler{repo: repo, legacyRepo: legacyRepo, rdb: rdb, log: log}
+	h := &handler{repo: repo, rdb: rdb, log: log}
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.MonitorPort), Handler: h.routes()}
 
 	go func() {
@@ -97,10 +81,9 @@ func main() {
 }
 
 type handler struct {
-	repo       *postgres.Repository
-	legacyRepo *postgres.LegacyRepository
-	rdb        *redis.Client
-	log        *slog.Logger
+	repo *postgres.Repository
+	rdb  *redis.Client
+	log  *slog.Logger
 }
 
 func (h *handler) routes() http.Handler {
@@ -127,62 +110,81 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.legacyRepo.Ping(ctx); err != nil {
-		h.log.Warn("health check: legacy postgres ping failed", "error", err)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("legacy postgres unavailable"))
-		return
-	}
-
 	_, _ = w.Write([]byte("OK"))
 }
 
+type metricsOutput struct {
+	RedisFetchQueue            int64   `json:"redis_fetch_queue"`
+	RedisParseQueue           int64   `json:"redis_parse_queue"`
+	RedisFailedQueue          int64   `json:"redis_failed_queue"`
+	RedisPermanentFailedQueue int64   `json:"redis_permanent_failed_queue"`
+	MatchesCount              int64   `json:"matches_count"`
+	PlayerMatchesCount        int64   `json:"player_matches_count"`
+	ParsedMatchesCount        int64   `json:"parsed_matches_count"`
+	FetcherLastRunTS          int64   `json:"fetcher_last_run_ts,omitempty"`
+	FetcherLastRunDiscovered int     `json:"fetcher_last_run_discovered,omitempty"`
+	FetcherLastRunNewInDB    int     `json:"fetcher_last_run_new_in_db,omitempty"`
+	FetcherLastRunPushed    int     `json:"fetcher_last_run_pushed,omitempty"`
+	Errors                   []string `json:"errors,omitempty"`
+}
+
 func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
-	h.log.Info("metrics request received")
 	ctx := r.Context()
-	var out metricsOutput
+	w.Header().Set("Content-Type", "application/json")
+
+	out := metricsOutput{}
 	var errs []string
 
-	if val, err := h.rdb.SCard(ctx, "proxy_pool").Result(); err != nil {
-		h.log.Warn("metrics: SCard proxy_pool failed", "error", err)
-		errs = append(errs, "redis: failed to get proxy count")
-	} else {
-		out.ValidProxies = val
+	if data, err := h.rdb.Get(ctx, "fetcher:last_run").Bytes(); err == nil {
+		var stats struct {
+			TS         int64 `json:"ts"`
+			Discovered int   `json:"discovered"`
+			NewInDB   int   `json:"new_in_db"`
+			Pushed    int   `json:"pushed"`
+		}
+		if json.Unmarshal(data, &stats) == nil {
+			out.FetcherLastRunTS = stats.TS
+			out.FetcherLastRunDiscovered = stats.Discovered
+			out.FetcherLastRunNewInDB = stats.NewInDB
+			out.FetcherLastRunPushed = stats.Pushed
+		}
 	}
 
-	if val, err := h.rdb.LLen(ctx, "fetch_queue").Result(); err != nil {
-		h.log.Warn("metrics: LLen fetch_queue failed", "error", err)
-		errs = append(errs, "redis: failed to get fetch_queue length")
+if val, err := h.rdb.LLen(ctx, "fetch_queue").Result(); err != nil {
+		h.log.Warn("metrics: fetch_queue len failed", "error", err)
+		errs = append(errs, "redis: fetch_queue")
 	} else {
 		out.RedisFetchQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "parse_queue").Result(); err != nil {
-		h.log.Warn("metrics: LLen parse_queue failed", "error", err)
-		errs = append(errs, "redis: failed to get parse_queue length")
+		h.log.Warn("metrics: parse_queue len failed", "error", err)
+		errs = append(errs, "redis: parse_queue")
 	} else {
 		out.RedisParseQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "failed_queue").Result(); err != nil {
-		h.log.Warn("metrics: LLen failed_queue failed", "error", err)
-		errs = append(errs, "redis: failed to get failed_queue length")
+		h.log.Warn("metrics: failed_queue len failed", "error", err)
+		errs = append(errs, "redis: failed_queue")
 	} else {
 		out.RedisFailedQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "permanent_failed_queue").Result(); err != nil {
-		h.log.Warn("metrics: LLen permanent_failed_queue failed", "error", err)
-		errs = append(errs, "redis: failed to get permanent_failed_queue length")
+		h.log.Warn("metrics: permanent_failed_queue len failed", "error", err)
+		errs = append(errs, "redis: permanent_failed_queue")
 	} else {
 		out.RedisPermanentFailedQueue = val
 	}
 
-	if val, err := h.legacyRepo.CountUniqueExternalIDs(ctx); err != nil {
-		h.log.Warn("metrics: CountUniqueExternalIDs failed", "error", err)
-		errs = append(errs, "legacy postgres: failed to get count")
+	if total, parsed, players, err := h.repo.CountMatches(ctx); err != nil {
+		h.log.Warn("metrics: CountMatches failed", "error", err)
+		errs = append(errs, "postgres: failed to count matches")
 	} else {
-		out.LegacyPostgresCount = val
+		out.MatchesCount = total
+		out.ParsedMatchesCount = parsed
+		out.PlayerMatchesCount = players
 	}
 
 	if len(errs) > 0 {
@@ -190,18 +192,6 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(out); err != nil {
-		h.log.Warn("metrics encode failed", "error", err)
-	}
-}
-
-type metricsOutput struct {
-	ValidProxies              int64    `json:"valid_proxies"`
-	RedisFetchQueue           int64    `json:"redis_fetch_queue"`
-	RedisParseQueue           int64    `json:"redis_parse_queue"`
-	RedisFailedQueue          int64    `json:"redis_failed_queue"`
-	RedisPermanentFailedQueue int64    `json:"redis_permanent_failed_queue"`
-	LegacyPostgresCount       int64    `json:"legacy_postgres_count"`
-	Errors                    []string `json:"errors,omitempty"`
+	resp, _ := json.Marshal(out)
+	_, _ = w.Write(resp)
 }

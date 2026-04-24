@@ -21,18 +21,18 @@ import (
 
 type Fetcher struct {
 	redisClient   *redis.Client
-	legacyRepo    *postgres.LegacyRepository
-	key           string
-	sqlDir        string
-	logger        *slog.Logger
-	httpClient    *httpx.ProxiedClient
-	maxQueueSize  int64
+	repo         *postgres.Repository
+	key          string
+	sqlDir       string
+	logger       *slog.Logger
+	httpClient   *httpx.ProxiedClient
+	maxQueueSize int64
 	maxProxyFails int
 }
 
 func NewFetcher(
 	redisClient *redis.Client,
-	legacyRepo *postgres.LegacyRepository,
+	repo *postgres.Repository,
 	key, sqlDir string,
 	logger *slog.Logger,
 	maxQueueSize int64,
@@ -47,12 +47,12 @@ func NewFetcher(
 	}
 	return &Fetcher{
 		redisClient:   redisClient,
-		legacyRepo:    legacyRepo,
-		key:           key,
-		sqlDir:        sqlDir,
-		logger:        logger,
-		httpClient:    httpx.NewProxiedClient(pool, 60*time.Second),
-		maxQueueSize:  maxQueueSize,
+		repo:        repo,
+		key:          key,
+		sqlDir:       sqlDir,
+		logger:       logger,
+		httpClient:   httpx.NewProxiedClient(pool, 60*time.Second),
+		maxQueueSize: maxQueueSize,
 		maxProxyFails: maxProxyFails,
 	}
 }
@@ -76,15 +76,9 @@ func (f *Fetcher) Run(ctx context.Context) error {
 
 	f.logger.Info("discovered match IDs", "count", len(matchIDs))
 
-	idStrs := make([]string, len(matchIDs))
-	for i, id := range matchIDs {
-		idStrs[i] = fmt.Sprintf("%d", id)
-	}
-
-	dbNewIDs, err := f.legacyRepo.FilterNewIDs(ctx, idStrs)
+	unknownIDs, err := f.repo.FilterUnknownMatchIDs(ctx, matchIDs)
 	if err != nil {
-		f.logger.Warn("failed to filter DB IDs, checking all", "error", err)
-		dbNewIDs = idStrs
+		return fmt.Errorf("filter match ids: %w", err)
 	}
 
 	queueLen, err := f.redisClient.GetQueueLen(ctx)
@@ -99,7 +93,7 @@ func (f *Fetcher) Run(ctx context.Context) error {
 	f.logger.Info("queue capacity check passed, starting push")
 
 	pushed := 0
-	for _, idStr := range dbNewIDs {
+	for _, id := range unknownIDs {
 		queueLen, err := f.redisClient.GetQueueLen(ctx)
 		if err != nil {
 			f.logger.Warn("GetQueueLen failed during push", "error", err)
@@ -109,6 +103,8 @@ func (f *Fetcher) Run(ctx context.Context) error {
 			break
 		}
 
+		idStr := strconv.FormatInt(id, 10)
+
 		seen, err := f.redisClient.IsFetchIDSeen(ctx, idStr)
 		if err != nil {
 			f.logger.Warn("IsFetchIDSeen failed, pushing anyway",
@@ -116,9 +112,6 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		} else if seen {
 			continue
 		}
-
-		var id int64
-		id, _ = strconv.ParseInt(idStr, 10, 64)
 
 		task := models.FetchTask{
 			MatchID: idStr,
@@ -137,7 +130,23 @@ func (f *Fetcher) Run(ctx context.Context) error {
 	}
 
 	f.logger.Info("tasks pushed to queue", "count", pushed)
+
+	f.recordStats(ctx, len(matchIDs), len(unknownIDs), pushed)
 	return nil
+}
+
+func (f *Fetcher) recordStats(ctx context.Context, discovered, newInDB, pushed int) {
+	stats := map[string]any{
+		"ts":         time.Now().Unix(),
+		"discovered": discovered,
+		"new_in_db":  newInDB,
+		"pushed":     pushed,
+	}
+	b, err := json.Marshal(stats)
+	if err != nil {
+		return
+	}
+	_ = f.redisClient.Instance().Set(ctx, "fetcher:last_run", string(b), 24*time.Hour).Err()
 }
 
 func (f *Fetcher) loadQuery() (string, error) {
@@ -189,10 +198,14 @@ func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64,
 		default:
 		}
 
-		proxy, err := f.redisClient.GetRandomProxy(ctx)
+		proxy, err := f.redisClient.GetWeightedRandomProxy(ctx)
 		if err != nil {
 			f.logger.Warn("no proxy available", "attempt", attempt, "error", err)
-			time.Sleep(2 * time.Second)
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			lastErr = fmt.Errorf("no proxy available: %w", err)
 			continue
 		}

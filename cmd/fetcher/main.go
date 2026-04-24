@@ -58,30 +58,27 @@ func main() {
 		}
 	}(redisClient)
 
-	// Legacy DB only — fetcher uses it for FilterNewIDs dedup.
-	legacyClient, err := postgresstore.NewClient(ctx, cfg.LegacyPostgresURL)
+	// Main DB for dedup
+	pgClient, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
 	if err != nil {
-		log.Error("failed to connect to legacy postgres", "error", err)
+		log.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
-	defer legacyClient.Close()
+	defer pgClient.Close()
 
-	legacyRepo := postgresstore.NewLegacyRepository(legacyClient)
-	if err := legacyRepo.EnsureSchema(ctx); err != nil {
-		log.Error("failed to ensure legacy schema", "error", err)
+	repo := postgresstore.NewRepository(pgClient)
+	if err := repo.Migrate(ctx); err != nil {
+		log.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
 
 	fetcher := worker.NewFetcher(
-		redisClient, legacyRepo, *key, cfg.SQLDir, log,
+		redisClient, repo, *key, cfg.SQLDir, log,
 		cfg.MaxQueueSize, cfg.MaxProxyFails,
 	)
 
 	if err := fetcher.Run(ctx); err != nil {
 		log.Error("fetcher error", "error", err)
-		if syncErr := os.Stdout.Sync(); syncErr != nil {
-			return
-		}
 		os.Exit(1)
 	}
 

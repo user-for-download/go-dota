@@ -85,7 +85,7 @@ func TestAddProxies(t *testing.T) {
 		t.Fatalf("AddProxies() error = %v", err)
 	}
 
-	proxy, err := client.GetRandomProxy(ctx)
+	proxy, err := client.GetWeightedRandomProxy(ctx)
 	if err != nil {
 		t.Fatalf("GetRandomProxy() error = %v", err)
 	}
@@ -111,7 +111,7 @@ func TestRemoveProxy(t *testing.T) {
 		t.Fatalf("RemoveProxy() error = %v", err)
 	}
 
-	_, err = client.GetRandomProxy(ctx)
+	_, err = client.GetWeightedRandomProxy(ctx)
 	if err == nil {
 		t.Error("GetRandomProxy() should fail after removing proxy")
 	}
@@ -139,16 +139,16 @@ func TestGetProxyCount(t *testing.T) {
 	client.rdb.Del(ctx, "proxy_pool")
 }
 
-func TestGetRandomProxyEmpty(t *testing.T) {
+func TestGetWeightedRandomProxyEmpty(t *testing.T) {
 	ctx := context.Background()
 	client, cleanup := setupRedisContainer(ctx, t)
 	defer cleanup()
 
 	client.rdb.Del(ctx, "proxy_pool")
 
-	_, err := client.GetRandomProxy(ctx)
+	_, err := client.GetWeightedRandomProxy(ctx)
 	if err == nil {
-		t.Error("GetRandomProxy() should fail when pool is empty")
+		t.Error("GetWeightedRandomProxy() should fail when pool is empty")
 	}
 
 	client.rdb.Del(ctx, "proxy_pool")

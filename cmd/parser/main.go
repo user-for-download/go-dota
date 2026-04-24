@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,26 +13,9 @@ import (
 	"github.com/user-for-download/go-dota/internal/worker"
 )
 
-var allowedKeys = []string{"leagues", "players", "teams", "default"}
-
 func main() {
-	key := flag.String("key", "default", fmt.Sprintf("Fetch key: %v", allowedKeys))
-	flag.Parse()
-
-	validKeys := make(map[string]bool)
-	for _, k := range allowedKeys {
-		validKeys[k] = true
-	}
-	if !validKeys[*key] {
-		_, err := fmt.Fprintf(os.Stderr, "Invalid --key value. Allowed values: %v\n", allowedKeys)
-		if err != nil {
-			return
-		}
-		os.Exit(1)
-	}
-
 	log := logger.Init()
-	log.Info("starting parser", "key", *key)
+	log.Info("starting parser")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -45,7 +26,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Redis
 	redisClient, err := redisstore.NewClientWithConfig(ctx, cfg.RedisURL, redisstore.ClientConfig{
 		MaxRetryCount: cfg.MaxRetries,
 	})
@@ -59,7 +39,6 @@ func main() {
 		}
 	}(redisClient)
 
-	// Main DB (normalized match schema)
 	pgClient, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
 	if err != nil {
 		log.Error("failed to connect to postgres", "error", err)
@@ -73,39 +52,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Legacy DB (raw JSON dumps in parsed_data)
-	legacyClient, err := postgresstore.NewClient(ctx, cfg.LegacyPostgresURL)
-	if err != nil {
-		log.Error("failed to connect to legacy postgres", "error", err)
-		os.Exit(1)
-	}
-	defer legacyClient.Close()
-
-	legacyRepo := postgresstore.NewLegacyRepository(legacyClient)
-	if err := legacyRepo.EnsureSchema(ctx); err != nil {
-		log.Error("failed to ensure legacy schema", "error", err)
-		os.Exit(1)
-	}
-
-	// Parser writes to legacy DB
-	parser := worker.NewParser(redisClient, legacyRepo, cfg.ParserWorkers, log)
+	parser := worker.NewParser(
+		redisClient, repo, cfg.ParserWorkers, log,
+		cfg.DLQBatchSize, cfg.DLQMaxPerTick,
+	)
 	if err := parser.Run(ctx); err != nil {
 		log.Error("parser error", "error", err)
 		os.Exit(1)
 	}
-
-	// Fetcher dedupes against legacy DB
-	fetcher := worker.NewFetcher(
-		redisClient, legacyRepo, *key, cfg.SQLDir, log,
-		cfg.MaxQueueSize, cfg.MaxProxyFails,
-	)
-	if err := fetcher.Run(ctx); err != nil {
-		log.Error("fetcher error", "error", err)
-		if syncErr := os.Stdout.Sync(); syncErr != nil {
-			return
-		}
-		os.Exit(1)
-	}
-
-	log.Info("fetcher completed successfully")
 }

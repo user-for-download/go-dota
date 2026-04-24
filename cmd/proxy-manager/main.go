@@ -31,12 +31,11 @@ func main() {
 		log.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
 	}
-	defer func(redisClient *redisstore.Client) {
-		err := redisClient.Close()
-		if err != nil {
-
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			log.Error("redis close", "error", err)
 		}
-	}(redisClient)
+	}()
 
 	refreshInterval := time.Duration(cfg.ProxyRefreshMin) * time.Minute
 	pm := worker.NewProxyManagerWithConfig(

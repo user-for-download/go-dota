@@ -35,26 +35,6 @@
         timeout: 5s
         retries: 5
 
-    postgres-legacy:
-      image: postgres:15-alpine
-      profiles:
-        - all
-        - db
-      restart: unless-stopped
-      environment:
-        POSTGRES_DB: legacy
-        POSTGRES_USER: postgres
-        POSTGRES_PASSWORD: postgres
-      ports:
-        - "5433:5432"
-      volumes:
-        - pg-legacy-data:/var/lib/postgresql/data
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U postgres -d legacy"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
-
     proxy-manager:
 #      image: go-dota/proxy-manager:latest
       profiles:
@@ -95,7 +75,6 @@
         SKIP_TLS_VERIFY: "false"
 
     parser:
-#      image: go-dota/parser:latest
       profiles:
         - all
         - go
@@ -108,16 +87,12 @@
           condition: service_healthy
         postgres:
           condition: service_healthy
-        postgres-legacy:
-          condition: service_healthy
       environment:
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable&pool_max_conns=20
-        LEGACY_POSTGRES_URL: postgres://postgres:postgres@postgres-legacy:5432/legacy?sslmode=disable&pool_max_conns=10
         PARSER_WORKERS: "5"
 
     fetcher:
-#      image: go-dota/fetcher:latest
       profiles:
         - go
       build:
@@ -127,16 +102,14 @@
       depends_on:
         redis:
           condition: service_healthy
-        postgres-legacy:
+        postgres:
           condition: service_healthy
       environment:
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
-        LEGACY_POSTGRES_URL: postgres://postgres:postgres@postgres-legacy:5432/legacy?sslmode=disable
         SQL_DIR: /app/deployments/queries
 
     monitor:
-#      image: go-dota/monitor:latest
       profiles:
         - all
         - go
@@ -149,17 +122,49 @@
           condition: service_healthy
         postgres:
           condition: service_healthy
-        postgres-legacy:
-          condition: service_healthy
       environment:
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable&pool_max_conns=20
-        LEGACY_POSTGRES_URL: postgres://postgres:postgres@postgres-legacy:5432/legacy?sslmode=disable&pool_max_conns=10
         MONITOR_PORT: "8080"
       ports:
         - "8080:8080"
 
+    enricher:
+      profiles:
+        - all
+        - go
+      build:
+        context: ..
+        dockerfile: deployments/Dockerfile.enricher
+      restart: unless-stopped
+      depends_on:
+        redis:
+          condition: service_healthy
+        postgres:
+          condition: service_healthy
+      environment:
+        REDIS_URL: redis://redis:6379/0
+        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
+        ENRICHER_INTERVAL: 24h
+
+    partition-manager:
+      profiles:
+        - all
+        - go
+      build:
+        context: ..
+        dockerfile: deployments/Dockerfile.partition-manager
+      restart: unless-stopped
+      depends_on:
+        postgres:
+          condition: service_healthy
+      environment:
+        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
+        PARTITION_AHEAD_MONTHS: "3"
+        PARTITION_RETENTION_MONTHS: "0"
+        PARTITION_DETACH_ONLY: "true"
+        PARTITION_CHECK_INTERVAL: 24h
+
   volumes:
     redis-data:
     pg-data:
-    pg-legacy-data:

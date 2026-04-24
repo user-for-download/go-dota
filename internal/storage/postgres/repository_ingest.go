@@ -5,81 +5,80 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/user-for-download/go-dota/internal/models"
 )
 
-// IngestMatch atomically inserts a full match and all its sub-resources.
-//
-// Ordering:
-//  1. advisory lock on match_id (serializes concurrent ingests of the same match)
-//  2. matches (parent row; must exist for partition routing)
-//  3. player_matches + player_match_details + player_timeseries
-//  4. draft: picks_bans + draft_timings
-//  5. events: objectives + chat + teamfights
-//  6. metadata: advantages + cosmetics
-//  7. team links: radiant + dire
-//
-// All steps run in a single pgx transaction; any failure rolls back the whole match.
+// IngestMatch inserts a match with full FK compliance.
+// All nested data (players, draft, events, timeseries) is upserted.
 func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("validate match: %w", err)
 	}
 
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
-		// 1. Serialize concurrent writers for the same match.
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, m.MatchID); err != nil {
 			return fmt.Errorf("advisory lock: %w", err)
 		}
 
-		// 2. Core match row.
+		// FK stubs - teams, leagues, and heroes must exist before player_matches
+		if err := upsertTeamStubTx(ctx, tx, m.RadiantTeamID); err != nil {
+			return fmt.Errorf("team stub (radiant): %w", err)
+		}
+		if err := upsertTeamStubTx(ctx, tx, m.DireTeamID); err != nil {
+			return fmt.Errorf("team stub (dire): %w", err)
+		}
+		if err := upsertLeagueStubTx(ctx, tx, m.LeagueID); err != nil {
+			return fmt.Errorf("league stub: %w", err)
+		}
+
+		// Core match row
 		if err := upsertMatchTx(ctx, tx, m); err != nil {
 			return fmt.Errorf("matches: %w", err)
 		}
 
-		// 3. Players + details + per-minute series.
-		if len(m.Players) > 0 {
-			if err := replacePlayerMatchesTx(ctx, tx, m); err != nil {
-				return fmt.Errorf("player_matches: %w", err)
-			}
-			if err := replacePlayerDetailsTx(ctx, tx, m); err != nil {
-				return fmt.Errorf("player_match_details: %w", err)
-			}
-			if err := replacePlayerTimeseriesTx(ctx, tx, m); err != nil {
-				return fmt.Errorf("player_timeseries: %w", err)
-			}
+		// Player stubs for tracking seen accounts and hero stubs before any player data
+		if err := upsertPlayerStubsTx(ctx, tx, m); err != nil {
+			return fmt.Errorf("player stubs: %w", err)
+		}
+		if err := upsertHeroStubsTx(ctx, tx, m); err != nil {
+			return fmt.Errorf("hero stubs: %w", err)
 		}
 
-		// 4. Draft.
-		if len(m.PicksBans) > 0 {
-			if err := replacePicksBansTx(ctx, tx, m.MatchID, m.PicksBans); err != nil {
-				return fmt.Errorf("picks_bans: %w", err)
-			}
-		}
-		if len(m.DraftTimings) > 0 {
-			if err := replaceDraftTimingsTx(ctx, tx, m.MatchID, m.DraftTimings); err != nil {
-				return fmt.Errorf("draft_timings: %w", err)
-			}
+		// Player data (hot)
+		if err := replacePlayerMatchesTx(ctx, tx, m); err != nil {
+			return fmt.Errorf("player matches: %w", err)
 		}
 
-		// 5. Events.
-		if len(m.Objectives) > 0 {
-			if err := replaceObjectivesTx(ctx, tx, m.MatchID, m.Objectives); err != nil {
-				return fmt.Errorf("objectives: %w", err)
-			}
-		}
-		if len(m.Chat) > 0 {
-			if err := replaceChatTx(ctx, tx, m.MatchID, m.Chat); err != nil {
-				return fmt.Errorf("chat: %w", err)
-			}
-		}
-		if len(m.Teamfights) > 0 {
-			if err := replaceTeamfightsTx(ctx, tx, m.MatchID, m.Teamfights); err != nil {
-				return fmt.Errorf("teamfights: %w", err)
-			}
+		// Player cold details (JSONB)
+		if err := upsertPlayerMatchDetailsTx(ctx, tx, m); err != nil {
+			return fmt.Errorf("player_match_details: %w", err)
 		}
 
-		// 6. Metadata.
+		// Draft data
+		if err := replacePicksBansTx(ctx, tx, m.MatchID, m.PicksBans); err != nil {
+			return fmt.Errorf("picks_bans: %w", err)
+		}
+		if err := replaceDraftTimingsTx(ctx, tx, m.MatchID, m.DraftTimings); err != nil {
+			return fmt.Errorf("draft_timings: %w", err)
+		}
+
+		// Event data
+		if err := replaceObjectivesTx(ctx, tx, m.MatchID, m.Objectives); err != nil {
+			return fmt.Errorf("objectives: %w", err)
+		}
+		if err := replaceChatTx(ctx, tx, m.MatchID, m.Chat); err != nil {
+			return fmt.Errorf("chat: %w", err)
+		}
+		if err := replaceTeamfightsTx(ctx, tx, m.MatchID, m.Teamfights); err != nil {
+			return fmt.Errorf("teamfights: %w", err)
+		}
+
+		// Timeseries (only for parsed matches)
+		if err := insertPlayerTimeseriesTx(ctx, tx, m); err != nil {
+			return fmt.Errorf("player_timeseries: %w", err)
+		}
+
+		// Metadata - advantages and cosmetics
 		if err := upsertMatchAdvantagesTx(ctx, tx, m); err != nil {
 			return fmt.Errorf("advantages: %w", err)
 		}
@@ -87,22 +86,14 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 			return fmt.Errorf("cosmetics: %w", err)
 		}
 
-		// 7. Team links.
+		// Team links in team_matches
 		if m.RadiantTeamID != nil {
-			if err := upsertTeamMatchTx(
-				ctx, tx,
-				m.MatchID, m.StartTime,
-				m.RadiantTeamID, true, m.RadiantWin, m.LeagueID,
-			); err != nil {
+			if err := upsertTeamMatchTx(ctx, tx, m.MatchID, m.StartTime, m.RadiantTeamID, true, m.RadiantWin, m.LeagueID); err != nil {
 				return fmt.Errorf("radiant_team_match: %w", err)
 			}
 		}
 		if m.DireTeamID != nil {
-			if err := upsertTeamMatchTx(
-				ctx, tx,
-				m.MatchID, m.StartTime,
-				m.DireTeamID, false, !m.RadiantWin, m.LeagueID,
-			); err != nil {
+			if err := upsertTeamMatchTx(ctx, tx, m.MatchID, m.StartTime, m.DireTeamID, false, !m.RadiantWin, m.LeagueID); err != nil {
 				return fmt.Errorf("dire_team_match: %w", err)
 			}
 		}

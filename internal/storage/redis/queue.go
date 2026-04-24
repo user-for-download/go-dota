@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -43,7 +44,7 @@ func (c *Client) PushFetchTask(ctx context.Context, task models.FetchTask) error
 func (c *Client) PopFetchTask(ctx context.Context) (models.FetchTask, error) {
 	result, err := c.rdb.BLPop(ctx, 5*time.Second, fetchQueueKey).Result()
 	if err != nil {
-		if err == goredis.Nil {
+		if errors.Is(err, goredis.Nil) {
 			return models.FetchTask{}, fmt.Errorf("no task in queue")
 		}
 		return models.FetchTask{}, fmt.Errorf("blpop fetch_queue: %w", err)
@@ -68,7 +69,7 @@ func (c *Client) PushParseTask(ctx context.Context, taskID string) error {
 func (c *Client) PopParseTask(ctx context.Context) (string, error) {
 	result, err := c.rdb.BLPop(ctx, 5*time.Second, parseQueueKey).Result()
 	if err != nil {
-		if err == goredis.Nil {
+		if errors.Is(err, goredis.Nil) {
 			return "", fmt.Errorf("no task in queue")
 		}
 		return "", fmt.Errorf("blpop parse_queue: %w", err)
@@ -114,7 +115,7 @@ func (c *Client) GetRawData(ctx context.Context, taskID string) (json.RawMessage
 	key := rawDataKeyPrefix + taskID
 	result, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
-		if err == goredis.Nil {
+		if errors.Is(err, goredis.Nil) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get raw_data:%s: %w", taskID, err)
@@ -162,7 +163,7 @@ func (c *Client) DeleteRetryCount(ctx context.Context, taskID string) error {
 
 func (c *Client) GetRetryCount(ctx context.Context, taskID string) (int64, error) {
 	countStr, err := c.rdb.Get(ctx, retryCountKey(taskID)).Result()
-	if err == goredis.Nil {
+	if errors.Is(err, goredis.Nil) {
 		return 0, nil
 	}
 	if err != nil {
@@ -196,7 +197,7 @@ func (c *Client) RequeueFailedTasksBatch(ctx context.Context, batchSize int) (in
 	var count int64
 	for i := 0; i < batchSize; i++ {
 		taskID, err := c.rdb.LPop(ctx, failedTasksQueueKey).Result()
-		if err == goredis.Nil {
+		if errors.Is(err, goredis.Nil) {
 			break
 		} else if err != nil {
 			return count, err

@@ -153,10 +153,6 @@ func (c *Client) GetWeightedRandomProxy(ctx context.Context) (string, error) {
 	return proxy, nil
 }
 
-func (c *Client) GetRandomProxy(ctx context.Context) (string, error) {
-	return c.GetWeightedRandomProxy(ctx)
-}
-
 func (c *Client) GetProxyCount(ctx context.Context) (int64, error) {
 	count, err := c.rdb.SCard(ctx, proxyPoolKey).Result()
 	if err != nil {

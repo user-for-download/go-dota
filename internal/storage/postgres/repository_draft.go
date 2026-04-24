@@ -10,7 +10,7 @@ import (
 )
 
 // replacePicksBansTx deletes existing picks/bans for the match and bulk-inserts
-// the new set via COPY.
+// the new set via COPY. Also creates hero stubs for picks/bans hero IDs.
 func replacePicksBansTx(ctx context.Context, tx pgx.Tx, matchID int64, pb []models.PicksBan) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM picks_bans WHERE match_id = $1`, matchID,
@@ -19,6 +19,17 @@ func replacePicksBansTx(ctx context.Context, tx pgx.Tx, matchID int64, pb []mode
 	}
 	if len(pb) == 0 {
 		return nil
+	}
+
+	// Create hero stubs for all hero IDs in picks/bans
+	heroIDs := make(map[int16]struct{}, len(pb))
+	for _, p := range pb {
+		heroIDs[p.HeroID] = struct{}{}
+	}
+	for hid := range heroIDs {
+		if err := upsertHeroStubTx(ctx, tx, hid); err != nil {
+			return err
+		}
 	}
 
 	// Deduplicate by ord in case the upstream payload has duplicates (the PK

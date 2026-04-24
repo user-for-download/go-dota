@@ -13,6 +13,10 @@ import (
 // upsertMatchTx inserts or updates the core matches row. start_time is required
 // in the INSERT so PostgreSQL can route to the correct partition.
 func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
+	leagueID := m.LeagueID
+	if leagueID != nil && *leagueID <= 0 {
+		leagueID = nil
+	}
 	const q = `
 		INSERT INTO matches (
 			match_id, match_seq_num, start_time, duration, radiant_win,
@@ -55,7 +59,7 @@ func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
 		m.RadiantScore, m.DireScore, m.FirstBloodTime,
 		m.LobbyType, m.GameMode, m.Cluster, m.Engine, m.HumanPlayers,
 		m.Version, m.PatchID, m.PositiveVotes, m.NegativeVotes,
-		m.LeagueID, m.SeriesID, m.SeriesType,
+		leagueID, m.SeriesID, m.SeriesType,
 		m.RadiantTeamID, m.DireTeamID,
 		m.RadiantCaptain, m.DireCaptain,
 		m.ReplaySalt, m.ReplayURL, m.IsParsed(),
@@ -102,6 +106,34 @@ func upsertMatchCosmeticsTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 	return nil
 }
 
+// replacePlayerMatchesTx inserts all player rows for a match.
+// Uses ON CONFLICT DO UPDATE for idempotency.
+func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
+	if len(m.Players) == 0 {
+		return nil
+	}
+
+	for _, p := range m.Players {
+		isRadiant := p.PlayerSlot < 128
+		win := m.RadiantWin == isRadiant
+
+		const q = `
+			INSERT INTO player_matches (match_id, player_slot, start_time, hero_id, is_radiant, win, duration)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (match_id, player_slot, start_time) DO UPDATE SET
+				hero_id = EXCLUDED.hero_id,
+				win = EXCLUDED.win,
+				duration = EXCLUDED.duration`
+		_, err := tx.Exec(ctx, q,
+			m.MatchID, p.PlayerSlot, m.StartTime, p.HeroID, isRadiant, win, m.Duration,
+		)
+		if err != nil {
+			return fmt.Errorf("player_matches: %w", err)
+		}
+	}
+	return nil
+}
+
 // MatchExists reports whether a match is already stored (in any partition).
 func (r *Repository) MatchExists(ctx context.Context, matchID, startTime int64) (bool, error) {
 	var exists bool
@@ -113,4 +145,37 @@ func (r *Repository) MatchExists(ctx context.Context, matchID, startTime int64) 
 		return false, fmt.Errorf("match exists: %w", err)
 	}
 	return exists, nil
+}
+
+// FilterUnknownMatchIDs returns the subset of matchIDs NOT present in matches.
+func (r *Repository) FilterUnknownMatchIDs(ctx context.Context, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT match_id FROM matches WHERE match_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("filter match ids: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[int64]struct{}, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		seen[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]int64, 0, len(ids)-len(seen))
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }

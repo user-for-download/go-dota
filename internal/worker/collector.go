@@ -145,7 +145,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		}
 		noProxyCounter = 0
 
-		proxyURL, err := c.redisClient.GetRandomProxy(ctx)
+		proxyURL, err := c.redisClient.GetWeightedRandomProxy(ctx)
 		if err != nil {
 			c.logger.Warn("no proxy available, backing off",
 				"worker_id", workerID, "attempt", attempt, "error", err)

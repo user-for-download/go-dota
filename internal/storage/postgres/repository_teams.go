@@ -7,6 +7,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// upsertTeamStubTx creates a stub team row if it doesn't exist.
+// Used to satisfy FK constraints before match ingestion.
+func upsertTeamStubTx(ctx context.Context, tx pgx.Tx, teamID *int64) error {
+	if teamID == nil {
+		return nil
+	}
+	const q = `
+		INSERT INTO teams (team_id) VALUES ($1)
+		ON CONFLICT (team_id) DO NOTHING`
+	_, err := tx.Exec(ctx, q, *teamID)
+	return err
+}
+
 // UpsertTeam creates or updates a team row. Called outside match ingestion
 // (e.g., when bulk-syncing teams from the /teams endpoint).
 func (r *Repository) UpsertTeam(ctx context.Context, teamID int64, name, tag, logoURL string) error {
