@@ -20,17 +20,24 @@ import (
 )
 
 type Fetcher struct {
-	redisClient *redis.Client
-	repo       *postgres.Repository
-	key        string
-	sqlDir     string
-	logger     *slog.Logger
-	httpClient *httpx.ProxiedClient
-	maxQueueSize int64
+	redisClient   *redis.Client
+	legacyRepo    *postgres.LegacyRepository
+	key           string
+	sqlDir        string
+	logger        *slog.Logger
+	httpClient    *httpx.ProxiedClient
+	maxQueueSize  int64
 	maxProxyFails int
 }
 
-func NewFetcher(redisClient *redis.Client, repo *postgres.Repository, key, sqlDir string, logger *slog.Logger, maxQueueSize int64, maxProxyFails int) *Fetcher {
+func NewFetcher(
+	redisClient *redis.Client,
+	legacyRepo *postgres.LegacyRepository,
+	key, sqlDir string,
+	logger *slog.Logger,
+	maxQueueSize int64,
+	maxProxyFails int,
+) *Fetcher {
 	pool := httpx.NewTransportPool(httpx.DefaultOptions())
 	if maxProxyFails <= 0 {
 		maxProxyFails = redis.DefaultMaxProxyFails
@@ -39,13 +46,13 @@ func NewFetcher(redisClient *redis.Client, repo *postgres.Repository, key, sqlDi
 		maxQueueSize = 10000
 	}
 	return &Fetcher{
-		redisClient:  redisClient,
-		repo:      repo,
-		key:       key,
-		sqlDir:    sqlDir,
-		logger:    logger,
-		httpClient: httpx.NewProxiedClient(pool, 60*time.Second),
-		maxQueueSize: maxQueueSize,
+		redisClient:   redisClient,
+		legacyRepo:    legacyRepo,
+		key:           key,
+		sqlDir:        sqlDir,
+		logger:        logger,
+		httpClient:    httpx.NewProxiedClient(pool, 60*time.Second),
+		maxQueueSize:  maxQueueSize,
 		maxProxyFails: maxProxyFails,
 	}
 }
@@ -74,19 +81,18 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		idStrs[i] = fmt.Sprintf("%d", id)
 	}
 
-	dbNewIDs, err := f.repo.FilterNewIDs(ctx, idStrs)
+	dbNewIDs, err := f.legacyRepo.FilterNewIDs(ctx, idStrs)
 	if err != nil {
 		f.logger.Warn("failed to filter DB IDs, checking all", "error", err)
 		dbNewIDs = idStrs
 	}
 
 	queueLen, err := f.redisClient.GetQueueLen(ctx)
-	// NOTE: This check is racy across multiple fetcher instances.
-	// Acceptable for single-fetcher deployments.
 	if err != nil {
 		f.logger.Warn("failed to get queue length", "error", err)
 	} else if queueLen >= f.maxQueueSize {
-		f.logger.Warn("fetch queue at capacity, skipping push", "queue_size", queueLen, "max", f.maxQueueSize)
+		f.logger.Warn("fetch queue at capacity, skipping push",
+			"queue_size", queueLen, "max", f.maxQueueSize)
 		return nil
 	}
 
@@ -98,13 +104,15 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		if err != nil {
 			f.logger.Warn("GetQueueLen failed during push", "error", err)
 		} else if queueLen >= f.maxQueueSize {
-			f.logger.Warn("queue reached capacity during push, stopping", "queue_size", queueLen, "max", f.maxQueueSize)
+			f.logger.Warn("queue reached capacity during push, stopping",
+				"queue_size", queueLen, "max", f.maxQueueSize)
 			break
 		}
 
 		seen, err := f.redisClient.IsFetchIDSeen(ctx, idStr)
 		if err != nil {
-			f.logger.Warn("IsFetchIDSeen failed, pushing anyway", "id", idStr, "error", err)
+			f.logger.Warn("IsFetchIDSeen failed, pushing anyway",
+				"id", idStr, "error", err)
 		} else if seen {
 			continue
 		}
@@ -122,7 +130,8 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		}
 
 		if err := f.redisClient.MarkFetchIDSeen(ctx, idStr); err != nil {
-			f.logger.Warn("MarkFetchIDSeen failed, ID may be re-pushed", "id", idStr, "error", err)
+			f.logger.Warn("MarkFetchIDSeen failed, ID may be re-pushed",
+				"id", idStr, "error", err)
 		}
 		pushed++
 	}

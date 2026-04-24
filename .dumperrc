@@ -7,10 +7,10 @@ limit = 210000
 
 # Exclude supports exact names, path fragments, and globs (*, ?)
 # Brace expansion works in config: {target,build,*.log}
-exclude = .git, target, node_modules, .idea, .vscode, *.lock, *.log, *.json
+exclude = .git, target, node_modules, .idea, .vscode, *.lock, *.log, .env.example, *.sql, *.json
 
 # include = .env.example, Makefile
-clean = true
+clean = false
 progress = true
 # verbose = false
 # no_tree = false

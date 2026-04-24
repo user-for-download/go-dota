@@ -14,46 +14,46 @@ import (
 )
 
 type Parser struct {
-	redisClient *redisstore.Client
-	pgRepo     *postgresstore.Repository
-	numWorkers  int
-	logger      *slog.Logger
-	recoverDLQ  bool
-	dlqBatchSize int
+	redisClient   *redisstore.Client
+	legacyRepo    *postgresstore.LegacyRepository
+	numWorkers    int
+	logger        *slog.Logger
+	recoverDLQ    bool
+	dlqBatchSize  int
 	dlqMaxPerTick int
 }
 
 func NewParser(
 	redisClient *redisstore.Client,
-	pgRepo *postgresstore.Repository,
+	legacyRepo *postgresstore.LegacyRepository,
 	numWorkers int,
 	logger *slog.Logger,
 ) *Parser {
 	return &Parser{
-		redisClient: redisClient,
-		pgRepo:     pgRepo,
-		numWorkers:  numWorkers,
-		logger:     logger,
-		recoverDLQ:  true,
-		dlqBatchSize: 100,
+		redisClient:   redisClient,
+		legacyRepo:    legacyRepo,
+		numWorkers:    numWorkers,
+		logger:        logger,
+		recoverDLQ:    true,
+		dlqBatchSize:  100,
 		dlqMaxPerTick: 500,
 	}
 }
 
 func NewParserWithConfig(
 	redisClient *redisstore.Client,
-	pgRepo *postgresstore.Repository,
+	legacyRepo *postgresstore.LegacyRepository,
 	numWorkers int,
 	logger *slog.Logger,
 	dlqBatchSize, dlqMaxPerTick int,
 ) *Parser {
 	return &Parser{
-		redisClient: redisClient,
-		pgRepo:     pgRepo,
-		numWorkers:  numWorkers,
-		logger:     logger,
-		recoverDLQ:  true,
-		dlqBatchSize: dlqBatchSize,
+		redisClient:   redisClient,
+		legacyRepo:    legacyRepo,
+		numWorkers:    numWorkers,
+		logger:        logger,
+		recoverDLQ:    true,
+		dlqBatchSize:  dlqBatchSize,
 		dlqMaxPerTick: dlqMaxPerTick,
 	}
 }
@@ -111,8 +111,6 @@ func (p *Parser) periodicDLQDrain(ctx context.Context) {
 			return
 		case <-ticker.C:
 			total := 0
-			// Loop runs at most maxPerTick/batchSize batches per tick.
-			// If maxPerTick < batchSize, maxPerTick is set to batchSize (see above), so loop executes at least once.
 			for i := 0; i < maxPerTick/batchSize; i++ {
 				count, err := p.redisClient.RequeueFailedTasksBatch(ctx, batchSize)
 				if err != nil {
@@ -207,7 +205,8 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 	}
 
 	if apiResp.ID == "" {
-		p.logger.Error("no ID found in payload, discarding task (malformed data)", "task_id", taskID, "payload_size", len(data))
+		p.logger.Error("no ID found in payload, discarding task (malformed data)",
+			"task_id", taskID, "payload_size", len(data))
 		_ = p.redisClient.DeleteRawData(ctx, taskID)
 		_ = p.redisClient.DeleteRetryCount(ctx, taskID)
 		return
@@ -217,8 +216,9 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 		apiResp.Payload = data
 	}
 
-	if err := p.pgRepo.UpsertParsedData(ctx, apiResp.ID, apiResp.Payload); err != nil {
-		p.logger.Error("db upsert failed", "task_id", taskID, "external_id", apiResp.ID, "error", err)
+	if err := p.legacyRepo.UpsertParsedData(ctx, apiResp.ID, apiResp.Payload); err != nil {
+		p.logger.Error("legacy db upsert failed",
+			"task_id", taskID, "external_id", apiResp.ID, "error", err)
 		_ = p.redisClient.ExtendRawDataTTL(ctx, taskID)
 		_ = p.redisClient.IncrementRetryCount(ctx, taskID)
 		_ = p.redisClient.PushFailedTask(ctx, taskID)

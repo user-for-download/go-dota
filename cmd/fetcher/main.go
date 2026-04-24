@@ -53,27 +53,33 @@ func main() {
 		os.Exit(1)
 	}
 	defer func(redisClient *redisstore.Client) {
-		err := redisClient.Close()
-		if err != nil {
-			log.Error("redisClient", "error", err)
+		if err := redisClient.Close(); err != nil {
+			log.Error("redisClient close", "error", err)
 		}
 	}(redisClient)
 
-	pgClient, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
+	// Legacy DB only — fetcher uses it for FilterNewIDs dedup.
+	legacyClient, err := postgresstore.NewClient(ctx, cfg.LegacyPostgresURL)
 	if err != nil {
-		log.Error("failed to connect to postgres", "error", err)
+		log.Error("failed to connect to legacy postgres", "error", err)
 		os.Exit(1)
 	}
-	defer pgClient.Close()
+	defer legacyClient.Close()
 
-	repo := postgresstore.NewRepository(pgClient)
+	legacyRepo := postgresstore.NewLegacyRepository(legacyClient)
+	if err := legacyRepo.EnsureSchema(ctx); err != nil {
+		log.Error("failed to ensure legacy schema", "error", err)
+		os.Exit(1)
+	}
 
-	fetcher := worker.NewFetcher(redisClient, repo, *key, cfg.SQLDir, log, cfg.MaxQueueSize, cfg.MaxProxyFails)
+	fetcher := worker.NewFetcher(
+		redisClient, legacyRepo, *key, cfg.SQLDir, log,
+		cfg.MaxQueueSize, cfg.MaxProxyFails,
+	)
 
 	if err := fetcher.Run(ctx); err != nil {
 		log.Error("fetcher error", "error", err)
-		err := os.Stdout.Sync()
-		if err != nil {
+		if syncErr := os.Stdout.Sync(); syncErr != nil {
 			return
 		}
 		os.Exit(1)

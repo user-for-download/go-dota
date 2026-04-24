@@ -14,116 +14,25 @@ import (
 	"github.com/user-for-download/go-dota/internal/storage/redis"
 )
 
-type CircuitState int
-
-const (
-	CircuitClosed CircuitState = iota
-	CircuitOpen
-	CircuitHalfOpen
-)
-
-type CircuitBreaker struct {
-	state          CircuitState
-	failures       int
-	successes      int
-	lastFailure    time.Time
-	maxFailures    int
-	minSuccesses   int
-	resetTimeout   time.Duration
-	maxBackoff     time.Duration
-	probeInFlight  bool
-	mu             sync.Mutex
-}
-
-func NewCircuitBreaker(maxFailures, minSuccesses int, resetTimeout, maxBackoff time.Duration) *CircuitBreaker {
-	return &CircuitBreaker{
-		state:        CircuitClosed,
-		maxFailures:  maxFailures,
-		minSuccesses: minSuccesses,
-		resetTimeout: resetTimeout,
-		maxBackoff:   maxBackoff,
-	}
-}
-
-func (cb *CircuitBreaker) Allow() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	switch cb.state {
-	case CircuitClosed:
-		return true
-	case CircuitOpen:
-		if time.Since(cb.lastFailure) > cb.resetTimeout {
-			cb.state = CircuitHalfOpen
-			cb.successes = 0
-			cb.probeInFlight = false
-			return true
-		}
-		return false
-	case CircuitHalfOpen:
-		if cb.probeInFlight {
-			return false
-		}
-		cb.probeInFlight = true
-		return true
-	default:
-		return false
-	}
-}
-
-func (cb *CircuitBreaker) RecordSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	if cb.state == CircuitHalfOpen {
-		cb.successes++
-		cb.probeInFlight = false
-		if cb.successes >= cb.minSuccesses {
-			cb.state = CircuitClosed
-			cb.failures = 0
-		}
-	} else {
-		cb.failures = 0
-	}
-}
-
-func (cb *CircuitBreaker) RecordFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	cb.failures++
-	cb.lastFailure = time.Now()
-
-	if cb.state == CircuitHalfOpen {
-		cb.state = CircuitOpen
-		cb.probeInFlight = false
-	} else if cb.failures >= cb.maxFailures {
-		cb.state = CircuitOpen
-	}
-}
-
-func (cb *CircuitBreaker) BackoffDuration() time.Duration {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	backoff := cb.resetTimeout
-	for i := 0; i < cb.failures && backoff < cb.maxBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > cb.maxBackoff {
-		backoff = cb.maxBackoff
-	}
-	return backoff
-}
-
+// Collector pulls FetchTasks from Redis, fetches the target URL through a
+// proxy from the pool, and pushes the raw response into the parse queue.
+//
+// Failure handling is layered:
+//   - Per-proxy: RecordProxyFailure / RecordProxySuccess in Redis adjusts the
+//     proxy's weight in the pool; repeated failures evict it.
+//   - Per-request: up to `maxRetries` attempts with different proxies.
+//   - Rate limiting: enforced in Redis via AtomicRateLimit.
+//
+// There is deliberately no global circuit breaker. A bad proxy should not
+// stall every worker; the per-proxy signal + pool rotation is sufficient, and
+// a shared breaker was observed to deadlock under burst failures.
 type Collector struct {
-	redisClient    *redis.Client
-	targetAPIURL string
+	redisClient   *redis.Client
+	targetAPIURL  string
 	numWorkers    int
-	logger       *slog.Logger
+	logger        *slog.Logger
 	httpClient    *httpx.ProxiedClient
-	circuitBreaker *CircuitBreaker
-	maxProxyFails  int
+	maxProxyFails int
 }
 
 func NewCollector(
@@ -137,16 +46,17 @@ func NewCollector(
 	opts := httpx.DefaultOptions()
 	opts.SkipTLSVerify = skipTLSVerify
 	pool := httpx.NewTransportPool(opts)
+
 	if maxProxyFails <= 0 {
 		maxProxyFails = redis.DefaultMaxProxyFails
 	}
+
 	return &Collector{
-		redisClient:    redisClient,
-		targetAPIURL:   targetAPIURL,
-		numWorkers:   numWorkers,
-		logger:     logger,
-		httpClient:  httpx.NewProxiedClient(pool, 15*time.Second),
-		circuitBreaker: NewCircuitBreaker(5, 3, 30*time.Second, 60*time.Second),
+		redisClient:   redisClient,
+		targetAPIURL:  targetAPIURL,
+		numWorkers:    numWorkers,
+		logger:        logger,
+		httpClient:    httpx.NewProxiedClient(pool, 15*time.Second),
 		maxProxyFails: maxProxyFails,
 	}
 }
@@ -184,7 +94,7 @@ func (c *Collector) worker(ctx context.Context, id int) {
 			if ctx.Err() != nil {
 				return
 			}
-			c.logger.Debug("waiting for tasks from fetcher")
+			c.logger.Debug("waiting for tasks from fetcher", "worker_id", id)
 			continue
 		}
 
@@ -192,27 +102,21 @@ func (c *Collector) worker(ctx context.Context, id int) {
 	}
 }
 
+// processTask attempts to fetch one task, rotating through proxies on failure.
+//
+// Outcomes:
+//   - success: enqueue raw data for the parser, return
+//   - transient failure (bad proxy, rate limit): try another proxy
+//   - exhaustion: log and drop; the fetcher layer's seen-set prevents
+//     immediate re-queue of the same match
 func (c *Collector) processTask(ctx context.Context, task models.FetchTask, workerID int) {
-	const maxRetries = 5
-	const maxRateLimitRetries = 20
+	const (
+		maxRetries          = 5
+		maxRateLimitRetries = 20
+	)
+
 	noProxyCounter := 0
 	rateLimitRetries := 0
-
-	if !c.circuitBreaker.Allow() {
-		backoff := c.circuitBreaker.BackoffDuration()
-		c.logger.Warn("circuit breaker open, re-enqueueing task", "worker_id", workerID, "backoff", backoff)
-
-		if err := c.redisClient.PushFetchTask(ctx, task); err != nil {
-			c.logger.Error("failed to re-enqueue task after circuit breaker open", "task", task.MatchID, "error", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		return
-	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		select {
@@ -221,9 +125,10 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		default:
 		}
 
+		// Wait for a non-empty pool.
 		proxyCount, err := c.redisClient.GetProxyCount(ctx)
 		if err != nil {
-			c.logger.Warn("failed to get proxy count", "error", err)
+			c.logger.Warn("failed to get proxy count", "worker_id", workerID, "error", err)
 			continue
 		}
 		if proxyCount == 0 {
@@ -252,59 +157,73 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 			continue
 		}
 
+		// Respect per-proxy rate limits.
 		allowed, err := c.redisClient.AtomicRateLimit(ctx, proxyURL)
 		if err != nil {
-			c.logger.Warn("rate limit check failed", "proxy", proxyURL, "error", err)
+			c.logger.Warn("rate limit check failed",
+				"worker_id", workerID, "proxy", proxyURL, "error", err)
 			continue
 		}
 		if !allowed {
-			c.logger.Debug("proxy rate limited, trying another", "proxy", proxyURL)
 			rateLimitRetries++
+			c.logger.Debug("proxy rate limited, trying another",
+				"worker_id", workerID, "proxy", proxyURL,
+				"rate_limit_retries", rateLimitRetries)
+
 			if rateLimitRetries >= maxRateLimitRetries {
-				c.logger.Warn("too many rate limits, re-enqueueing task for later", "url", task.URL, "worker_id", workerID)
+				c.logger.Warn("too many rate limits, re-enqueueing task for later",
+					"worker_id", workerID, "url", task.URL)
 				if err := c.redisClient.PushFetchTask(ctx, task); err != nil {
-					c.logger.Error("failed to re-enqueue task after rate limit exhaustion", "task", task.URL, "error", err)
+					c.logger.Error("failed to re-enqueue task after rate limit exhaustion",
+						"worker_id", workerID, "task", task.URL, "error", err)
 				}
 				return
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(1 * time.Second):
+			case <-time.After(time.Second):
 			}
 			continue
 		}
 
+		// Do the fetch.
 		resp, err := c.httpClient.Get(ctx, task.URL, proxyURL)
 		if err != nil {
-			c.circuitBreaker.RecordFailure()
 			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
 			c.httpClient.RemoveProxy(proxyURL)
-			c.logger.Debug("fetch failed (network error)", "proxy", proxyURL, "error", err)
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			c.circuitBreaker.RecordFailure()
-			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
-			c.httpClient.RemoveProxy(proxyURL)
-			c.logger.Debug("fetch failed (bad status)", "proxy", proxyURL, "status", resp.StatusCode)
+			c.logger.Debug("fetch failed (network error)",
+				"worker_id", workerID, "proxy", proxyURL, "error", err)
 			continue
 		}
 
-		c.circuitBreaker.RecordSuccess()
+		if resp.StatusCode != http.StatusOK {
+			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
+			c.httpClient.RemoveProxy(proxyURL)
+			c.logger.Debug("fetch failed (bad status)",
+				"worker_id", workerID, "proxy", proxyURL, "status", resp.StatusCode)
+			continue
+		}
+
+		// Success path.
 		_ = c.redisClient.RecordProxySuccess(ctx, proxyURL)
 
 		taskID := uuid.New().String()
 		if err := c.redisClient.AtomicEnqueueRawData(ctx, taskID, resp.Body); err != nil {
-			c.logger.Error("enqueue raw data failed", "task_id", taskID, "error", err)
+			c.logger.Error("enqueue raw data failed",
+				"worker_id", workerID, "task_id", taskID, "error", err)
 			continue
 		}
 
 		c.logger.Info("task fetched and queued",
-			"task_id", taskID, "proxy", proxyURL, "worker_id", workerID)
+			"task_id", taskID,
+			"match_id", task.MatchID,
+			"proxy", proxyURL,
+			"worker_id", workerID,
+			"attempt", attempt)
 		return
 	}
 
-	c.circuitBreaker.RecordFailure()
-	c.logger.Warn("task exhausted retries, dropping", "url", task.URL, "worker_id", workerID)
+	c.logger.Warn("task exhausted retries, dropping",
+		"worker_id", workerID, "url", task.URL)
 }

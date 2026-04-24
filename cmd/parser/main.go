@@ -34,7 +34,7 @@ func main() {
 	}
 
 	log := logger.Init()
-	log.Info("starting fetcher", "key", *key)
+	log.Info("starting parser", "key", *key)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -45,6 +45,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Redis
 	redisClient, err := redisstore.NewClientWithConfig(ctx, cfg.RedisURL, redisstore.ClientConfig{
 		MaxRetryCount: cfg.MaxRetries,
 	})
@@ -53,12 +54,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer func(redisClient *redisstore.Client) {
-		err := redisClient.Close()
-		if err != nil {
-
+		if err := redisClient.Close(); err != nil {
+			log.Error("redisClient close", "error", err)
 		}
 	}(redisClient)
 
+	// Main DB (normalized match schema)
 	pgClient, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
 	if err != nil {
 		log.Error("failed to connect to postgres", "error", err)
@@ -67,24 +68,40 @@ func main() {
 	defer pgClient.Close()
 
 	repo := postgresstore.NewRepository(pgClient)
-
 	if err := repo.Migrate(ctx); err != nil {
 		log.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
 
-	parser := worker.NewParser(redisClient, repo, cfg.ParserWorkers, log)
+	// Legacy DB (raw JSON dumps in parsed_data)
+	legacyClient, err := postgresstore.NewClient(ctx, cfg.LegacyPostgresURL)
+	if err != nil {
+		log.Error("failed to connect to legacy postgres", "error", err)
+		os.Exit(1)
+	}
+	defer legacyClient.Close()
+
+	legacyRepo := postgresstore.NewLegacyRepository(legacyClient)
+	if err := legacyRepo.EnsureSchema(ctx); err != nil {
+		log.Error("failed to ensure legacy schema", "error", err)
+		os.Exit(1)
+	}
+
+	// Parser writes to legacy DB
+	parser := worker.NewParser(redisClient, legacyRepo, cfg.ParserWorkers, log)
 	if err := parser.Run(ctx); err != nil {
 		log.Error("parser error", "error", err)
 		os.Exit(1)
 	}
 
-	fetcher := worker.NewFetcher(redisClient, repo, *key, cfg.SQLDir, log, cfg.MaxQueueSize, cfg.MaxProxyFails)
-
+	// Fetcher dedupes against legacy DB
+	fetcher := worker.NewFetcher(
+		redisClient, legacyRepo, *key, cfg.SQLDir, log,
+		cfg.MaxQueueSize, cfg.MaxProxyFails,
+	)
 	if err := fetcher.Run(ctx); err != nil {
 		log.Error("fetcher error", "error", err)
-		err := os.Stdout.Sync()
-		if err != nil {
+		if syncErr := os.Stdout.Sync(); syncErr != nil {
 			return
 		}
 		os.Exit(1)

@@ -31,6 +31,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Redis
 	opts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		log.Error("invalid redis url", "error", err)
@@ -38,9 +39,8 @@ func main() {
 	}
 	rdb := redis.NewClient(opts)
 	defer func(rdb *redis.Client) {
-		err := rdb.Close()
-		if err != nil {
-			log.Error("redis.Client", "error", err)
+		if err := rdb.Close(); err != nil {
+			log.Error("redis.Client close", "error", err)
 		}
 	}(rdb)
 
@@ -49,21 +49,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := pgxpool.New(ctx, cfg.PostgresURL)
+	// Main DB
+	mainPool, err := pgxpool.New(ctx, cfg.PostgresURL)
 	if err != nil {
 		log.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer mainPool.Close()
 
-	if err := db.Ping(ctx); err != nil {
+	if err := mainPool.Ping(ctx); err != nil {
 		log.Error("failed to ping postgres", "error", err)
 		os.Exit(1)
 	}
 
-	repo := postgres.NewRepositoryFromPool(db)
+	// Legacy DB
+	legacyPool, err := pgxpool.New(ctx, cfg.LegacyPostgresURL)
+	if err != nil {
+		log.Error("failed to connect to legacy postgres", "error", err)
+		os.Exit(1)
+	}
+	defer legacyPool.Close()
 
-	h := &handler{repo: repo, rdb: rdb, log: log}
+	if err := legacyPool.Ping(ctx); err != nil {
+		log.Error("failed to ping legacy postgres", "error", err)
+		os.Exit(1)
+	}
+
+	repo := postgres.NewRepositoryFromPool(mainPool)
+	legacyRepo := postgres.NewLegacyRepositoryFromPool(legacyPool)
+
+	h := &handler{repo: repo, legacyRepo: legacyRepo, rdb: rdb, log: log}
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", cfg.MonitorPort), Handler: h.routes()}
 
 	go func() {
@@ -76,16 +91,16 @@ func main() {
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err = srv.Shutdown(shutdown)
-	if err != nil {
-		return
+	if err := srv.Shutdown(shutdown); err != nil {
+		log.Error("server shutdown error", "error", err)
 	}
 }
 
 type handler struct {
-	repo *postgres.Repository
-	rdb  *redis.Client
-	log  *slog.Logger
+	repo       *postgres.Repository
+	legacyRepo *postgres.LegacyRepository
+	rdb        *redis.Client
+	log        *slog.Logger
 }
 
 func (h *handler) routes() http.Handler {
@@ -101,86 +116,83 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 	if err := h.rdb.Ping(ctx).Err(); err != nil {
 		h.log.Warn("health check: redis ping failed", "error", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, err := w.Write([]byte("redis unavailable"))
-		if err != nil {
-			return
-		}
+		_, _ = w.Write([]byte("redis unavailable"))
 		return
 	}
 
 	if err := h.repo.Ping(ctx); err != nil {
 		h.log.Warn("health check: postgres ping failed", "error", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, err := w.Write([]byte("postgres unavailable"))
-		if err != nil {
-			return
-		}
+		_, _ = w.Write([]byte("postgres unavailable"))
 		return
 	}
 
-	_, err := w.Write([]byte("OK"))
-	if err != nil {
+	if err := h.legacyRepo.Ping(ctx); err != nil {
+		h.log.Warn("health check: legacy postgres ping failed", "error", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("legacy postgres unavailable"))
 		return
 	}
+
+	_, _ = w.Write([]byte("OK"))
 }
 
 func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("metrics request received")
 	ctx := r.Context()
 	var out metricsOutput
-	var errors []string
+	var errs []string
 
 	if val, err := h.rdb.SCard(ctx, "proxy_pool").Result(); err != nil {
 		h.log.Warn("metrics: SCard proxy_pool failed", "error", err)
-		errors = append(errors, "redis: failed to get proxy count")
+		errs = append(errs, "redis: failed to get proxy count")
 	} else {
 		out.ValidProxies = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "fetch_queue").Result(); err != nil {
 		h.log.Warn("metrics: LLen fetch_queue failed", "error", err)
-		errors = append(errors, "redis: failed to get fetch_queue length")
+		errs = append(errs, "redis: failed to get fetch_queue length")
 	} else {
 		out.RedisFetchQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "parse_queue").Result(); err != nil {
 		h.log.Warn("metrics: LLen parse_queue failed", "error", err)
-		errors = append(errors, "redis: failed to get parse_queue length")
+		errs = append(errs, "redis: failed to get parse_queue length")
 	} else {
 		out.RedisParseQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "failed_queue").Result(); err != nil {
 		h.log.Warn("metrics: LLen failed_queue failed", "error", err)
-		errors = append(errors, "redis: failed to get failed_queue length")
+		errs = append(errs, "redis: failed to get failed_queue length")
 	} else {
 		out.RedisFailedQueue = val
 	}
 
 	if val, err := h.rdb.LLen(ctx, "permanent_failed_queue").Result(); err != nil {
 		h.log.Warn("metrics: LLen permanent_failed_queue failed", "error", err)
-		errors = append(errors, "redis: failed to get permanent_failed_queue length")
+		errs = append(errs, "redis: failed to get permanent_failed_queue length")
 	} else {
 		out.RedisPermanentFailedQueue = val
 	}
 
-	if val, err := h.repo.CountUniqueExternalIDs(ctx); err != nil {
+	if val, err := h.legacyRepo.CountUniqueExternalIDs(ctx); err != nil {
 		h.log.Warn("metrics: CountUniqueExternalIDs failed", "error", err)
-		errors = append(errors, "postgres: failed to get count")
+		errs = append(errs, "legacy postgres: failed to get count")
 	} else {
-		out.PostgresCount = val
+		out.LegacyPostgresCount = val
 	}
 
-	if len(errors) > 0 {
-		out.Errors = errors
+	if len(errs) > 0 {
+		out.Errors = errs
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err := json.NewEncoder(w).Encode(out)
-	if err != nil {
-		return
+	if err := json.NewEncoder(w).Encode(out); err != nil {
+		h.log.Warn("metrics encode failed", "error", err)
 	}
 }
 
@@ -190,6 +202,6 @@ type metricsOutput struct {
 	RedisParseQueue           int64    `json:"redis_parse_queue"`
 	RedisFailedQueue          int64    `json:"redis_failed_queue"`
 	RedisPermanentFailedQueue int64    `json:"redis_permanent_failed_queue"`
-	PostgresCount             int64    `json:"postgres_count"`
+	LegacyPostgresCount       int64    `json:"legacy_postgres_count"`
 	Errors                    []string `json:"errors,omitempty"`
 }

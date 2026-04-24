@@ -90,21 +90,6 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE INDEX IF NOT EXISTS idx_teams_name_trgm
     ON teams USING GIN (name gin_trgm_ops);
 
--- =====================================================
--- Рейтинг команд
--- =====================================================
-CREATE TABLE IF NOT EXISTS team_rating (
-    team_id         BIGINT PRIMARY KEY REFERENCES teams(team_id) ON DELETE CASCADE,
-    rating          REAL,
-    wins            INTEGER DEFAULT 0,
-    losses          INTEGER DEFAULT 0,
-    last_match_time BIGINT,
-    last_match_id   BIGINT,
-    delta           REAL,
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_team_rating_rating
-    ON team_rating(rating DESC NULLS LAST);
 
 -- =====================================================
 -- Игроки (Steam профили)
