@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.25-alpine AS base
+WORKDIR /app
+
+# Dependency layer — cached unless go.mod/go.sum change
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    go mod download
+
+# Source layer
+COPY . .

@@ -1,0 +1,32 @@
+dump/
+.git/
+*.md
+.vscode/
+.idea/
+
+# Binaries
+bin/
+cmd/collector/collector
+cmd/fetcher/fetcher
+cmd/monitor/monitor
+cmd/parser/parser
+cmd/proxy-manager/proxy-manager
+
+# Local development
+.env
+*.log
+
+# Data dumps and temporary files
+.dumperrc
+proxy.json
+testdata/
+.DS_Store
+
+# Go dependencies and artifacts
+vendor/
+*.test
+*.exe
+*.prof
+
+# Docker
+.docker/

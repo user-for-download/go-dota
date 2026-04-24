@@ -1,0 +1,139 @@
+services:
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - all
+      - fetcher
+      - pipeline
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pipeline
+    ports:
+      - "5432:5432"
+    profiles:
+      - all
+      - fetcher
+      - pipeline
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  proxy-manager:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.proxy-manager
+    profiles:
+      - all
+      - fetcher
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      PROXY_PROVIDER_URL: ${PROXY_PROVIDER_URL}
+      HEALTH_CHECK_URL: "https://httpbin.org/ip"
+      PROXY_REFRESH_MIN: "15"
+      HTTP_PROXY: ${HTTP_PROXY_URL}
+      HTTPS_PROXY: ${HTTP_PROXY_URL}
+      NO_PROXY: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    volumes:
+      - ./proxy.json:/app/deployments/proxy.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  monitor:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.monitor
+    profiles:
+      - all
+      - fetcher
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable"
+      MONITOR_PORT: "8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.collector
+    profiles:
+      - pipeline
+      - all
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      TARGET_API_URL: "https://httpbin.org/json"
+      COLLECTOR_WORKERS: "10"
+      FETCH_INTERVAL_SEC: "5"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  parser:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.parser
+    profiles:
+      - pipeline
+      - all
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable"
+      PARSER_WORKERS: "5"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  fetcher:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.fetcher
+    profiles:
+      - fetcher
+      - all
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable"
+      SQL_DIR: "/app/deployments/queries"
+    volumes:
+      - ./queries:/app/deployments/queries:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      proxy-manager:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  redis_data:
+  pg_data:

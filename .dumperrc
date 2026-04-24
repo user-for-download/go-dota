@@ -1,0 +1,19 @@
+# Source Dumper Configuration (.dumperrc)
+
+# path = .
+type = go
+# out = dump/dump_*.txt
+limit = 210000
+
+# Exclude supports exact names, path fragments, and globs (*, ?)
+# Brace expansion works in config: {target,build,*.log}
+exclude = .git, target, node_modules, .idea, .vscode, *.lock, *.log, *.json
+
+# include = .env.example, Makefile
+clean = true
+progress = true
+# verbose = false
+# no_tree = false
+# tree_depth = 20
+show_size = true
+# hidden = false
