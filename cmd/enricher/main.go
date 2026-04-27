@@ -57,6 +57,15 @@ func main() {
 
 	// Build enricher config - allow config env vars to override defaults
 	enricherCfg := worker.DefaultEnricherConfig()
+	if cfg.EnricherHeroesURL != "" {
+		enricherCfg.HeroesURL = cfg.EnricherHeroesURL
+	}
+	if cfg.EnricherLeaguesURL != "" {
+		enricherCfg.LeaguesURL = cfg.EnricherLeaguesURL
+	}
+	if cfg.EnricherTeamsURL != "" {
+		enricherCfg.TeamsURL = cfg.EnricherTeamsURL
+	}
 	if cfg.EnricherItemsURL != "" {
 		enricherCfg.ItemsURL = cfg.EnricherItemsURL
 	}
@@ -65,6 +74,9 @@ func main() {
 	}
 	if cfg.EnricherLobbyTypesURL != "" {
 		enricherCfg.LobbyTypesURL = cfg.EnricherLobbyTypesURL
+	}
+	if cfg.EnricherPatchesURL != "" {
+		enricherCfg.PatchesURL = cfg.EnricherPatchesURL
 	}
 	enricher := worker.NewEnricher(rdb, repo, log, enricherCfg)
 

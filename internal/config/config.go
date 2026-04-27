@@ -30,9 +30,13 @@ type Config struct {
 	MaxPoolSize int `env:"MAX_POOL_SIZE" env-default:"500"`
 
 	// Enricher endpoints
-	EnricherItemsURL    string `env:"ENRICHER_ITEMS_URL" env-default:"https://api.opendota.com/api/constants/items"`
+	EnricherHeroesURL     string `env:"ENRICHER_HEROES_URL" env-default:"https://api.opendota.com/api/heroes"`
+	EnricherLeaguesURL    string `env:"ENRICHER_LEAGUES_URL" env-default:"https://api.opendota.com/api/leagues"`
+	EnricherTeamsURL      string `env:"ENRICHER_TEAMS_URL" env-default:"https://api.opendota.com/api/teams"`
+	EnricherItemsURL      string `env:"ENRICHER_ITEMS_URL" env-default:"https://api.opendota.com/api/constants/items"`
 	EnricherGameModesURL  string `env:"ENRICHER_GAME_MODES_URL" env-default:"https://api.opendota.com/api/constants/game_mode"`
 	EnricherLobbyTypesURL string `env:"ENRICHER_LOBBY_TYPES_URL" env-default:"https://api.opendota.com/api/constants/lobby_type"`
+	EnricherPatchesURL    string `env:"ENRICHER_PATCHES_URL" env-default:"https://api.opendota.com/api/constants/patch"`
 }
 
 func Load() (*Config, error) {

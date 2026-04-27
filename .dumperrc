@@ -1,7 +1,7 @@
 # Source Dumper Configuration (.dumperrc)
 
 # path = .
-#type = go
+type = go
 # out = dump/dump_*.txt
 limit = 210000
 

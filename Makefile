@@ -20,11 +20,13 @@ clean: ## Remove build cache and base images
 		deployments-partition-manager:latest || true
 
 build: ## Build all service images (cached)
-	docker buildx bake -f $(BAKE_FILE) --set "*.contexts.od-base:latest=target:base"
+	docker buildx bake -f $(BAKE_FILE)
 
 rebuild: ## Force-rebuild all images
-	docker buildx bake -f $(BAKE_FILE) --no-cache --set "*.contexts.od-base:latest=target:base"
+	docker buildx bake -f $(BAKE_FILE) --no-cache
 
+up-init:
+	docker compose -f $(COMPOSE_FILE) --profile init --profile db --profile proxy up
 up: ## Start the full pipeline (foreground)
 	docker compose -f $(COMPOSE_FILE)  --profile all up
 

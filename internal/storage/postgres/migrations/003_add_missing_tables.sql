@@ -22,3 +22,14 @@ CREATE TABLE IF NOT EXISTS team_rating (
     );
 
 -- Also ensure that the heroes, items, leagues, patches, players, teams tables exist.
+CREATE TABLE IF NOT EXISTS team_matches (
+                                            team_id    BIGINT NOT NULL,
+                                            match_id   BIGINT NOT NULL,
+                                            start_time BIGINT NOT NULL,
+                                            is_radiant BOOLEAN NOT NULL,
+                                            win        BOOLEAN NOT NULL,
+                                            leagueid   INT,
+                                            PRIMARY KEY (team_id, match_id)
+    );
+-- Create index for performance
+CREATE INDEX IF NOT EXISTS idx_team_matches_team_id ON team_matches(team_id);

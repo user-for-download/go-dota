@@ -12,7 +12,7 @@ import (
 )
 
 // replaceObjectivesTx bulk-inserts match objectives (tower kills, Roshan, etc.).
-func replaceObjectivesTx(ctx context.Context, tx pgx.Tx, matchID int64, objs []models.Objective) error {
+func replaceObjectivesTx(ctx context.Context, tx pgx.Tx, matchID, startTime int64, objs []models.Objective) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM match_objectives WHERE match_id = $1`, matchID,
 	); err != nil {
@@ -26,7 +26,7 @@ func replaceObjectivesTx(ctx context.Context, tx pgx.Tx, matchID int64, objs []m
 	for i := range objs {
 		o := &objs[i]
 		rows = append(rows, []any{
-			matchID, o.Time, o.Type, o.Slot, o.PlayerSlot,
+			matchID, startTime, o.Time, o.Type, o.Slot, o.PlayerSlot,
 			o.Team, o.Key, o.Value, o.Unit,
 		})
 	}
@@ -34,7 +34,7 @@ func replaceObjectivesTx(ctx context.Context, tx pgx.Tx, matchID int64, objs []m
 	n, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"match_objectives"},
 		[]string{
-			"match_id", "time", "type", "slot", "player_slot",
+			"match_id", "start_time", "time", "type", "slot", "player_slot",
 			"team", "key", "value", "unit",
 		},
 		pgx.CopyFromRows(rows),
@@ -49,7 +49,7 @@ func replaceObjectivesTx(ctx context.Context, tx pgx.Tx, matchID int64, objs []m
 }
 
 // replaceChatTx bulk-inserts match chat events.
-func replaceChatTx(ctx context.Context, tx pgx.Tx, matchID int64, chat []models.ChatEvent) error {
+func replaceChatTx(ctx context.Context, tx pgx.Tx, matchID, startTime int64, chat []models.ChatEvent) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM match_chat WHERE match_id = $1`, matchID,
 	); err != nil {
@@ -63,13 +63,13 @@ func replaceChatTx(ctx context.Context, tx pgx.Tx, matchID int64, chat []models.
 	for i := range chat {
 		c := &chat[i]
 		rows = append(rows, []any{
-			matchID, c.Time, c.Type, c.PlayerSlot, c.Unit, c.Key,
+			matchID, startTime, c.Time, c.Type, c.PlayerSlot, c.Unit, c.Key,
 		})
 	}
 
 	n, err := tx.CopyFrom(ctx,
 		pgx.Identifier{"match_chat"},
-		[]string{"match_id", "time", "type", "player_slot", "unit", "key"},
+		[]string{"match_id", "start_time", "time", "type", "player_slot", "unit", "key"},
 		pgx.CopyFromRows(rows),
 	)
 	if err != nil {
@@ -84,7 +84,7 @@ func replaceChatTx(ctx context.Context, tx pgx.Tx, matchID int64, chat []models.
 // replaceTeamfightsTx bulk-inserts teamfight summaries.
 // If the nested `players` JSON is malformed, the column is stored as NULL
 // and a warning is logged so the data drift is visible in observability.
-func replaceTeamfightsTx(ctx context.Context, tx pgx.Tx, matchID int64, tfs []models.Teamfight) error {
+func replaceTeamfightsTx(ctx context.Context, tx pgx.Tx, matchID, startTime int64, tfs []models.Teamfight) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM match_teamfights WHERE match_id = $1`, matchID,
 	); err != nil {
@@ -113,7 +113,7 @@ func replaceTeamfightsTx(ctx context.Context, tx pgx.Tx, matchID int64, tfs []mo
 		}
 
 		rows = append(rows, []any{
-			matchID, t.Start, t.End, t.LastDeath, t.Deaths, players,
+			matchID, startTime, t.End, t.LastDeath, t.Deaths, players,
 		})
 	}
 

@@ -69,13 +69,13 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 		}
 
 		// Event data
-		if err := replaceObjectivesTx(ctx, tx, m.MatchID, m.Objectives); err != nil {
+		if err := replaceObjectivesTx(ctx, tx, m.MatchID, m.StartTime, m.Objectives); err != nil {
 			return fmt.Errorf("objectives: %w", err)
 		}
-		if err := replaceChatTx(ctx, tx, m.MatchID, m.Chat); err != nil {
+		if err := replaceChatTx(ctx, tx, m.MatchID, m.StartTime, m.Chat); err != nil {
 			return fmt.Errorf("chat: %w", err)
 		}
-		if err := replaceTeamfightsTx(ctx, tx, m.MatchID, m.Teamfights); err != nil {
+		if err := replaceTeamfightsTx(ctx, tx, m.MatchID, m.StartTime, m.Teamfights); err != nil {
 			return fmt.Errorf("teamfights: %w", err)
 		}
 

@@ -35,6 +35,7 @@ type Collector struct {
 	maxProxyFails int
 	maxRetries   int
 	maxRateLimitRetries int
+	maxQueueSize int64
 }
 
 func NewCollector(
@@ -45,6 +46,7 @@ func NewCollector(
 	maxProxyFails int,
 	maxRetries int,
 	maxRateLimitRetries int,
+	maxQueueSize int64,
 ) *Collector {
 	opts := httpx.DefaultOptions()
 	opts.SkipTLSVerify = skipTLSVerify
@@ -59,15 +61,19 @@ func NewCollector(
 	if maxRateLimitRetries <= 0 {
 		maxRateLimitRetries = 20
 	}
+	if maxQueueSize <= 0 {
+		maxQueueSize = 10000
+	}
 
 	return &Collector{
 		redisClient:        redisClient,
 		numWorkers:       numWorkers,
 		logger:           logger,
-		httpClient:       httpx.NewProxiedClient(pool, 15*time.Second),
-		maxProxyFails:     maxProxyFails,
+		httpClient:       httpx.NewProxiedClient(pool, 30*time.Second),
+		maxProxyFails:    maxProxyFails,
 		maxRetries:       maxRetries,
 		maxRateLimitRetries: maxRateLimitRetries,
+		maxQueueSize:     maxQueueSize,
 	}
 }
 
@@ -175,15 +181,19 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 				"worker_id", workerID, "proxy", proxyURL,
 				"rate_limit_retries", rateLimitRetries)
 
-if rateLimitRetries >= c.maxRateLimitRetries {
-			c.logger.Warn("too many rate limits, re-enqueueing task for later",
-				"worker_id", workerID, "url", task.URL)
-			if err := c.redisClient.PushFetchTask(ctx, task); err != nil {
-				c.logger.Error("failed to re-enqueue task after rate limit exhaustion",
-					"worker_id", workerID, "task", task.URL, "error", err)
+			if rateLimitRetries >= c.maxRateLimitRetries {
+				c.logger.Warn("too many rate limits, re-enqueueing task for later",
+					"worker_id", workerID, "url", task.URL)
+				ok, err := c.redisClient.PushFetchTaskWithCap(ctx, task, c.maxQueueSize)
+				if err != nil {
+					c.logger.Error("failed to re-enqueue task after rate limit exhaustion",
+						"worker_id", workerID, "task", task.URL, "error", err)
+				} else if !ok {
+					c.logger.Warn("fetch queue at capacity, dropping task",
+						"worker_id", workerID, "task", task.URL)
+				}
+				return
 			}
-			return
-		}
 		select {
 		case <-ctx.Done():
 			return

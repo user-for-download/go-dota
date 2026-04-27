@@ -49,6 +49,7 @@ func main() {
 		cfg.MaxProxyFails,
 		cfg.CollectorMaxRetries,
 		cfg.CollectorMaxRateLimitRetries,
+		cfg.MaxQueueSize,
 	)
 
 	collector.Run(ctx)
