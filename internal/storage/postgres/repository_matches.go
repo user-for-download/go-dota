@@ -178,7 +178,7 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 
 	// Build the SET clause for ON CONFLICT - exclude PK columns from update
 	setClauses := make([]string, 0, len(constCols)-3) // exclude match_id, player_slot, start_time
-	for _, c := range constCols[3:] { // skip PK columns
+	for _, c := range constCols[3:] {                 // skip PK columns
 		setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", c, c))
 	}
 	setClause := strings.Join(setClauses, ", ")

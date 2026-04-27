@@ -16,9 +16,9 @@ import (
 
 type Parser struct {
 	redisClient   *redisstore.Client
-	pgRepo      *postgresstore.Repository
-	numWorkers  int
-	logger     *slog.Logger
+	pgRepo        *postgresstore.Repository
+	numWorkers    int
+	logger        *slog.Logger
 	dlqBatchSize  int
 	dlqMaxPerTick int
 }
@@ -32,10 +32,10 @@ func NewParser(
 ) *Parser {
 	return &Parser{
 		redisClient:   redisClient,
-		pgRepo:      pgRepo,
-		numWorkers:  numWorkers,
-		logger:    logger,
-		dlqBatchSize: dlqBatchSize,
+		pgRepo:        pgRepo,
+		numWorkers:    numWorkers,
+		logger:        logger,
+		dlqBatchSize:  dlqBatchSize,
 		dlqMaxPerTick: dlqMaxPerTick,
 	}
 }
@@ -43,7 +43,7 @@ func NewParser(
 func (p *Parser) Run(ctx context.Context) error {
 	p.logger.Info("parser starting workers", "count", p.numWorkers)
 
-p.logger.Info("attempting DLQ recovery on startup")
+	p.logger.Info("attempting DLQ recovery on startup")
 	count, err := p.redisClient.RequeueFailedTasks(ctx)
 	if err != nil {
 		p.logger.Warn("DLQ recovery failed", "error", err)

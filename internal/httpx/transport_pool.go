@@ -13,8 +13,8 @@ type Options struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
-	DialTimeout        time.Duration
-	MaxPoolSize        int // 0 = unlimited
+	DialTimeout         time.Duration
+	MaxPoolSize         int // 0 = unlimited
 }
 
 const defaultMaxPoolSize = 500
@@ -24,8 +24,8 @@ func DefaultOptions() Options {
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
-		DialTimeout:        10 * time.Second,
-		MaxPoolSize:        defaultMaxPoolSize,
+		DialTimeout:         10 * time.Second,
+		MaxPoolSize:         defaultMaxPoolSize,
 	}
 }
 
@@ -33,7 +33,7 @@ type TransportPool struct {
 	opts       Options
 	mu         sync.RWMutex
 	transports map[string]*http.Transport
-	lastUsed  map[string]time.Time
+	lastUsed   map[string]time.Time
 }
 
 func NewTransportPool(opts Options) *TransportPool {
@@ -43,7 +43,7 @@ func NewTransportPool(opts Options) *TransportPool {
 	return &TransportPool{
 		opts:       opts,
 		transports: make(map[string]*http.Transport),
-		lastUsed:  make(map[string]time.Time),
+		lastUsed:   make(map[string]time.Time),
 	}
 }
 
@@ -66,11 +66,11 @@ func (p *TransportPool) GetOrCreate(proxyURL string) (*http.Transport, error) {
 	}
 
 	t := &http.Transport{
-		Proxy:              http.ProxyURL(parsed),
-		TLSClientConfig:    &tls.Config{InsecureSkipVerify: p.opts.SkipTLSVerify},
-		MaxIdleConns:       p.opts.MaxIdleConns,
+		Proxy:               http.ProxyURL(parsed),
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: p.opts.SkipTLSVerify},
+		MaxIdleConns:        p.opts.MaxIdleConns,
 		MaxIdleConnsPerHost: p.opts.MaxIdleConnsPerHost,
-		IdleConnTimeout:    p.opts.IdleConnTimeout,
+		IdleConnTimeout:     p.opts.IdleConnTimeout,
 	}
 	p.transports[proxyURL] = t
 	p.lastUsed[proxyURL] = time.Now()

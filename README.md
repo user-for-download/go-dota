@@ -18,6 +18,7 @@ Dota 2 match data ingestion pipeline. Fetches, collects, parses, and stores matc
 
 ```bash
 # Run a service
+make rebuild
 make up-init
 make up
 make fetch

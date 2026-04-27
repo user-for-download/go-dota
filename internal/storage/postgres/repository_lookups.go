@@ -9,14 +9,14 @@ import (
 )
 
 type ItemRef struct {
-	ID           int
-	Name         string
+	ID            int
+	Name          string
 	LocalizedName string
-	Cost         int
-	SecretShop   bool
-	SideShop    bool
-	Recipe      bool
-	Image       string
+	Cost          int
+	SecretShop    bool
+	SideShop      bool
+	Recipe        bool
+	Image         string
 }
 
 type GameModeRef struct {

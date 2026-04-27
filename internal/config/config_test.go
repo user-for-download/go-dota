@@ -47,16 +47,16 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadWithEnvOverrides(t *testing.T) {
 	envs := map[string]string{
-		"REDIS_URL":       "redis://custom:6379/1",
-		"POSTGRES_URL":   "postgres://user:pass@custom:5432/db",
-		"COLLECTOR_WORKERS":  "20",
+		"REDIS_URL":         "redis://custom:6379/1",
+		"POSTGRES_URL":      "postgres://user:pass@custom:5432/db",
+		"COLLECTOR_WORKERS": "20",
 		"PARSER_WORKERS":    "8",
 		"PROXY_REFRESH_MIN": "30",
-		"PROXY_LOCAL_FILE": "/custom/path/proxy.json",
-		"SKIP_TLS_VERIFY":  "true",
-		"MONITOR_PORT":     "9090",
-		"DLQ_BATCH_SIZE": "200",
-		"DLQ_MAX_PER_TICK": "1000",
+		"PROXY_LOCAL_FILE":  "/custom/path/proxy.json",
+		"SKIP_TLS_VERIFY":   "true",
+		"MONITOR_PORT":      "9090",
+		"DLQ_BATCH_SIZE":    "200",
+		"DLQ_MAX_PER_TICK":  "1000",
 	}
 	for k, v := range envs {
 		os.Setenv(k, v)

@@ -4,11 +4,11 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
-	"github.com/jackc/pgx/v5"
 )
 
 //go:embed migrations/*.sql
@@ -55,7 +55,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			files = append(files, e.Name())
 		}
 	}
-	
+
 	if len(files) == 0 {
 		return fmt.Errorf("no .sql files found in embedded migrations directory")
 	}
@@ -65,7 +65,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	for _, name := range files {
 		var exists bool
 		_ = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", name).Scan(&exists)
-		
+
 		if exists {
 			continue
 		}

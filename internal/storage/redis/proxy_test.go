@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user-for-download/go-dota/internal/models"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/user-for-download/go-dota/internal/models"
 )
 
 func setupRedisContainer(ctx context.Context, t *testing.T) (*Client, func()) {
@@ -47,7 +47,7 @@ func setupRedisContainer(ctx context.Context, t *testing.T) (*Client, func()) {
 	return &Client{rdb: rdb, cfg: ClientConfig{
 		MaxRetryCount: 3,
 		MaxReqPerMin:  60,
-		MaxReqPerDay: 3000,
+		MaxReqPerDay:  3000,
 	}}, cleanup
 }
 

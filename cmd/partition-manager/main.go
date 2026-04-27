@@ -48,7 +48,7 @@ func main() {
 	defer db.Close()
 
 	pmc := worker.PartitionManagerConfig{
-		MaxAheadMonths:   *ahead,
+		MaxAheadMonths:  *ahead,
 		RetentionMonths: *retention,
 		DetachOnly:      *detachOnly,
 	}

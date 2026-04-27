@@ -23,8 +23,8 @@ func DefaultClientConfig() ClientConfig {
 
 // Client wraps a go-redis client with dependency-injection-friendly construction.
 type Client struct {
-	rdb     *goredis.Client
-	cfg     ClientConfig
+	rdb *goredis.Client
+	cfg ClientConfig
 }
 
 // NewClient creates and validates a Redis connection.

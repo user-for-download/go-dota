@@ -256,10 +256,10 @@ func TestMatch_RoundTrip_PreservesRawJSONB(t *testing.T) {
 
 func TestObjective_UnmarshalKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		payload  string
-		wantKey  *string
-		wantErr  bool
+		name    string
+		payload string
+		wantKey *string
+		wantErr bool
 	}{
 		{
 			name:    "string key",

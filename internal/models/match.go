@@ -95,10 +95,10 @@ func (m *Match) Validate() error {
 	if m.Duration < 0 {
 		return fmt.Errorf("duration must be non-negative, got %d", m.Duration)
 	}
-	// OpenDota matches always have exactly 10 players when present.
-	// An empty slice is acceptable (rare edge case: aborted match).
-	if n := len(m.Players); n != 0 && n != 10 {
-		return fmt.Errorf("expected 0 or 10 players, got %d", n)
+	// OpenDota matches typically have 10 players, but bot/practice matches
+	// and abandoned matches may have fewer. Allow 0-10 players.
+	if n := len(m.Players); n > 10 {
+		return fmt.Errorf("expected at most 10 players, got %d", n)
 	}
 	// Detect duplicate player_slot within a match (would violate PK).
 	seen := make(map[int16]struct{}, len(m.Players))
@@ -167,7 +167,7 @@ type MatchPlayer struct {
 	CreepsStacked          *int16   `json:"creeps_stacked,omitempty"`
 	CampsStacked           *int16   `json:"camps_stacked,omitempty"`
 	RunePickups            *int16   `json:"rune_pickups,omitempty"`
-	FirstbloodClaimed 		*IntBool `json:"firstblood_claimed,omitempty"`
+	FirstbloodClaimed      *IntBool `json:"firstblood_claimed,omitempty"`
 	TeamfightParticipation *float32 `json:"teamfight_participation,omitempty"`
 	TowersKilled           *int16   `json:"towers_killed,omitempty"`
 	RoshansKilled          *int16   `json:"roshans_killed,omitempty"`
@@ -431,7 +431,7 @@ func BuildPlayerTimeseries(matchID int64, patchID *int16, p *MatchPlayer) ([]Pla
 type IntBool bool
 
 func (ib *IntBool) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 {
+	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
 	// Try boolean

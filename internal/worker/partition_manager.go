@@ -10,17 +10,17 @@ import (
 )
 
 type PartitionManager struct {
-	repo    *postgres.Repository
-	log    *slog.Logger
+	repo *postgres.Repository
+	log  *slog.Logger
 
-	maxAheadMonths   int
+	maxAheadMonths  int
 	retentionMonths int
-	detachOnly     bool
-	checkInterval  time.Duration
+	detachOnly      bool
+	checkInterval   time.Duration
 }
 
 type PartitionManagerConfig struct {
-	MaxAheadMonths   int
+	MaxAheadMonths  int
 	RetentionMonths int
 	DetachOnly      bool
 	CheckInterval   time.Duration
@@ -39,8 +39,8 @@ func NewPartitionManager(
 		log:             log,
 		maxAheadMonths:  cfg.MaxAheadMonths,
 		retentionMonths: cfg.RetentionMonths,
-		detachOnly:     cfg.DetachOnly,
-		checkInterval:  cfg.CheckInterval,
+		detachOnly:      cfg.DetachOnly,
+		checkInterval:   cfg.CheckInterval,
 	}
 }
 

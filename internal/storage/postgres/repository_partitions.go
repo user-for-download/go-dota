@@ -9,7 +9,7 @@ import (
 type Partition struct {
 	Name      string
 	FromEpoch int64
-	ToEpoch  int64
+	ToEpoch   int64
 }
 
 func (r *Repository) ListMatchPartitions(ctx context.Context) ([]Partition, error) {

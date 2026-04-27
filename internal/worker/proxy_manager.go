@@ -508,9 +508,9 @@ func (pm *ProxyManager) checkProxyIsolated(ctx context.Context, proxyURL string)
 		return false
 	}
 	transport := &http.Transport{
-		Proxy:              http.ProxyURL(proxyParsed),
-		DisableKeepAlives:  true,
-		TLSClientConfig:    &tls.Config{InsecureSkipVerify: true},
+		Proxy:             http.ProxyURL(proxyParsed),
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 

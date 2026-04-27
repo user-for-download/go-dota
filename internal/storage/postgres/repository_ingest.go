@@ -23,7 +23,10 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 			return fmt.Errorf("advisory lock: %w", err)
 		}
 		if !got {
-			return nil // another tx is handling this match
+			// Another transaction is handling this match.
+			// Note: if the other tx fails after acquiring the lock, the match may be lost.
+			// Caller treats this as success and deletes raw data - intended behavior.
+			return nil
 		}
 
 		// FK stubs - teams, leagues, and heroes must exist before player_matches

@@ -69,7 +69,7 @@ func NewEnricher(
 		itemsURL:      cfg.ItemsURL,
 		gameModesURL:  cfg.GameModesURL,
 		lobbyTypesURL: cfg.LobbyTypesURL,
-		patchesURL:   cfg.PatchesURL,
+		patchesURL:    cfg.PatchesURL,
 	}
 }
 
@@ -140,7 +140,7 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 
 		switch {
 		case resp.StatusCode == http.StatusOK:
-			if !isDirect && proxy != "" {
+			if proxy != "" {
 				_ = e.redis.RecordProxySuccess(ctx, proxy)
 			}
 			if err := json.Unmarshal(resp.Body, v); err != nil {
@@ -202,9 +202,9 @@ func (e *Enricher) enrichHeroes(ctx context.Context) error {
 			Name:          h.Name,
 			LocalizedName: h.LocalizedName,
 			PrimaryAttr:   h.PrimaryAttr,
-			AttackType:   h.AttackType,
-			Roles:        roles,
-			Legs:        h.Legs,
+			AttackType:    h.AttackType,
+			Roles:         roles,
+			Legs:          h.Legs,
 		})
 	}
 	if err := e.repo.UpsertHeroes(ctx, refs); err != nil {
@@ -314,7 +314,7 @@ func (e *Enricher) enrichItems(ctx context.Context) error {
 			Recipe:        it.Recipe == 1,
 			SecretShop:    it.SecretShop == 1,
 			SideShop:      it.SideShop == 1,
-			Image:        it.Img,
+			Image:         it.Img,
 		})
 	}
 	if err := e.repo.UpsertItems(ctx, refs); err != nil {

@@ -8,27 +8,27 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/user-for-download/go-dota/internal/models"
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/user-for-download/go-dota/internal/models"
 )
 
 const (
-	parseQueueKey        = "parse_queue"
+	parseQueueKey       = "parse_queue"
 	failedTasksQueueKey = "failed_queue"
-	permanentDLQKey    = "permanent_failed_queue"
-	rawDataKeyPrefix   = "raw_data:"
-	fetchQueueKey     = "fetch_queue"
-	fetchDLQKey        = "fetch_dlq"
-	seenSetFetchKey    = "seen_fetch_ids"
-	seenSetParseKey   = "seen_parse_ids"
-	retryCountPrefix   = "retry_count:"
+	permanentDLQKey     = "permanent_failed_queue"
+	rawDataKeyPrefix    = "raw_data:"
+	fetchQueueKey       = "fetch_queue"
+	fetchDLQKey         = "fetch_dlq"
+	seenSetFetchKey     = "seen_fetch_ids"
+	seenSetParseKey     = "seen_parse_ids"
+	retryCountPrefix    = "retry_count:"
 )
 
 const (
-	rawDataTTL        = 7200 * time.Second
-	seenSetFetchTTL   = 86400 * time.Second
-	seenSetParseTTL  = 86400 * time.Second
-	retryCountTTL    = 86400 * time.Second
+	rawDataTTL      = 7200 * time.Second
+	seenSetFetchTTL = 86400 * time.Second
+	seenSetParseTTL = 86400 * time.Second
+	retryCountTTL   = 86400 * time.Second
 )
 
 func (c *Client) PushFetchTask(ctx context.Context, task models.FetchTask) error {
@@ -158,7 +158,7 @@ func (c *Client) DeleteRawData(ctx context.Context, taskID string) error {
 
 func (c *Client) ExtendRawDataTTL(ctx context.Context, taskID string) error {
 	key := rawDataKeyPrefix + taskID
-	if err := c.rdb.Expire(ctx, key, 24*time.Hour).Err(); err != nil {
+	if err := c.rdb.Expire(ctx, key, rawDataTTL).Err(); err != nil {
 		return fmt.Errorf("extend raw_data ttl %s: %w", taskID, err)
 	}
 	return nil
@@ -246,9 +246,9 @@ var requeueFailedTasksScript = goredis.NewScript(`
 		local retryCount = tonumber(redis.call("GET", retryKey) or "0")
 
 		-- retryCount is incremented by Go BEFORE push to failed_queue
-		-- retryCount=1 means this was the 1st failure, so allow exactly maxRetries failures
+		-- retryCount=1 means this was the 1st failure, so allow up to maxRetries failures
 		-- e.g., maxRetries=3: fail at 1,2,3 → requeue; fail at 4 → permanent
-		if retryCount >= maxRetries then
+		if retryCount > maxRetries then
 			redis.call("RPUSH", permKey, taskID)
 			redis.call("DEL", retryKey)
 		else

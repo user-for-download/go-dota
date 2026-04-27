@@ -23,13 +23,13 @@ func upsertTeamStubTx(ctx context.Context, tx pgx.Tx, teamID *int64) error {
 
 // TeamRef is a reference type for bulk team operations.
 type TeamRef struct {
-	TeamID       int64
-	Name         string
-	Tag          string
-	LogoURL      string
-	Rating      float32
-	Wins         int
-	Losses      int
+	TeamID        int64
+	Name          string
+	Tag           string
+	LogoURL       string
+	Rating        float32
+	Wins          int
+	Losses        int
 	LastMatchTime int64
 }
 

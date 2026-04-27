@@ -21,12 +21,12 @@ import (
 
 type Fetcher struct {
 	redisClient   *redis.Client
-	repo         *postgres.Repository
-	key          string
-	sqlDir       string
-	logger       *slog.Logger
-	httpClient   *httpx.ProxiedClient
-	maxQueueSize int64
+	repo          *postgres.Repository
+	key           string
+	sqlDir        string
+	logger        *slog.Logger
+	httpClient    *httpx.ProxiedClient
+	maxQueueSize  int64
 	maxProxyFails int
 }
 
@@ -47,12 +47,12 @@ func NewFetcher(
 	}
 	return &Fetcher{
 		redisClient:   redisClient,
-		repo:        repo,
-		key:          key,
-		sqlDir:       sqlDir,
-		logger:       logger,
-		httpClient:   httpx.NewProxiedClient(pool, 60*time.Second),
-		maxQueueSize: maxQueueSize,
+		repo:          repo,
+		key:           key,
+		sqlDir:        sqlDir,
+		logger:        logger,
+		httpClient:    httpx.NewProxiedClient(pool, 60*time.Second),
+		maxQueueSize:  maxQueueSize,
 		maxProxyFails: maxProxyFails,
 	}
 }
@@ -288,6 +288,7 @@ func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64,
 		}
 
 		f.logger.Info("fetch succeeded", "proxy", proxy, "match_count", len(matchIDs))
+		_ = f.redisClient.RecordProxySuccess(ctx, proxy)
 		return matchIDs, nil
 	}
 

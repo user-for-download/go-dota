@@ -28,14 +28,14 @@ import (
 // stall every worker; the per-proxy signal + pool rotation is sufficient, and
 // a shared breaker was observed to deadlock under burst failures.
 type Collector struct {
-	redisClient    *redis.Client
-	numWorkers   int
-	logger      *slog.Logger
-	httpClient   *httpx.ProxiedClient
-	maxProxyFails int
-	maxRetries   int
+	redisClient         *redis.Client
+	numWorkers          int
+	logger              *slog.Logger
+	httpClient          *httpx.ProxiedClient
+	maxProxyFails       int
+	maxRetries          int
 	maxRateLimitRetries int
-	maxQueueSize int64
+	maxQueueSize        int64
 }
 
 func NewCollector(
@@ -66,14 +66,14 @@ func NewCollector(
 	}
 
 	return &Collector{
-		redisClient:        redisClient,
-		numWorkers:       numWorkers,
-		logger:           logger,
-		httpClient:       httpx.NewProxiedClient(pool, 30*time.Second),
-		maxProxyFails:    maxProxyFails,
-		maxRetries:       maxRetries,
+		redisClient:         redisClient,
+		numWorkers:          numWorkers,
+		logger:              logger,
+		httpClient:          httpx.NewProxiedClient(pool, 30*time.Second),
+		maxProxyFails:       maxProxyFails,
+		maxRetries:          maxRetries,
 		maxRateLimitRetries: maxRateLimitRetries,
-		maxQueueSize:     maxQueueSize,
+		maxQueueSize:        maxQueueSize,
 	}
 }
 
@@ -194,13 +194,13 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 				}
 				return
 			}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(jitteredSleep(time.Second)):
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(jitteredSleep(time.Second)):
+			}
+			continue
 		}
-		continue
-	}
 
 		// Do the fetch.
 		resp, err := c.httpClient.Get(ctx, task.URL, proxyURL)
