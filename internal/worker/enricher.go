@@ -100,15 +100,24 @@ func (e *Enricher) Run(ctx context.Context) error {
 }
 
 func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
-	const maxAttempts = 3
+	const maxAttempts = 4
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		var proxy string
-		if e.redis != nil {
+		isDirect := attempt == maxAttempts
+		if !isDirect && e.redis != nil {
 			p, err := e.redis.GetWeightedRandomProxy(ctx)
 			if err != nil {
-				e.log.Warn("no proxy, going direct", "url", url, "error", err)
+				e.log.Warn("no proxy available, will try direct",
+					"url", url, "attempt", attempt, "error", err)
+				isDirect = true
 			} else {
 				proxy = p
 			}
@@ -117,6 +126,12 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 		resp, err := e.http.Get(ctx, url, proxy)
 		if err != nil {
 			lastErr = fmt.Errorf("attempt %d: %w", attempt, err)
+			if !isDirect && proxy != "" {
+				_ = e.redis.RecordProxyFailure(ctx, proxy, redis.DefaultMaxProxyFails)
+				e.http.RemoveProxy(proxy)
+				e.log.Debug("proxy fetch failed, rotating",
+					"proxy", proxy, "url", url, "error", err)
+			}
 			if !backoff(ctx, attempt) {
 				return ctx.Err()
 			}
@@ -125,12 +140,19 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 
 		switch {
 		case resp.StatusCode == http.StatusOK:
+			if !isDirect && proxy != "" {
+				_ = e.redis.RecordProxySuccess(ctx, proxy)
+			}
 			if err := json.Unmarshal(resp.Body, v); err != nil {
 				return fmt.Errorf("unmarshal %s: %w", url, err)
 			}
 			return nil
 		case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
 			lastErr = fmt.Errorf("attempt %d: %s status %d", attempt, url, resp.StatusCode)
+			if !isDirect && proxy != "" {
+				_ = e.redis.RecordProxyFailure(ctx, proxy, redis.DefaultMaxProxyFails)
+				e.http.RemoveProxy(proxy)
+			}
 			if !backoff(ctx, attempt) {
 				return ctx.Err()
 			}
@@ -229,6 +251,7 @@ type odTeam struct {
 	LogoURL       string  `json:"logo_url"`
 	Rating        float32 `json:"rating"`
 	Wins          int     `json:"wins"`
+	Losses        int     `json:"losses"`
 	LastMatchTime int64   `json:"last_match_time"`
 }
 
@@ -246,6 +269,7 @@ func (e *Enricher) enrichTeams(ctx context.Context) error {
 			LogoURL:       t.LogoURL,
 			Rating:        t.Rating,
 			Wins:          t.Wins,
+			Losses:        t.Losses,
 			LastMatchTime: t.LastMatchTime,
 		})
 	}

@@ -18,6 +18,7 @@ const (
 	permanentDLQKey    = "permanent_failed_queue"
 	rawDataKeyPrefix   = "raw_data:"
 	fetchQueueKey     = "fetch_queue"
+	fetchDLQKey        = "fetch_dlq"
 	seenSetFetchKey    = "seen_fetch_ids"
 	seenSetParseKey   = "seen_parse_ids"
 	retryCountPrefix   = "retry_count:"
@@ -39,6 +40,30 @@ func (c *Client) PushFetchTask(ctx context.Context, task models.FetchTask) error
 		return fmt.Errorf("rpush fetch_queue: %w", err)
 	}
 	return nil
+}
+
+var pushFetchTaskCappedScript = goredis.NewScript(`
+	local queueKey = KEYS[1]
+	local data = ARGV[1]
+	local maxQueueSize = tonumber(ARGV[2])
+	local current = redis.call("LLEN", queueKey)
+	if current >= maxQueueSize then
+		return 0
+	end
+	redis.call("RPUSH", queueKey, data)
+	return 1
+`)
+
+func (c *Client) PushFetchTaskWithCap(ctx context.Context, task models.FetchTask, maxQueueSize int64) (bool, error) {
+	data, err := json.Marshal(task)
+	if err != nil {
+		return false, fmt.Errorf("marshal task: %w", err)
+	}
+	result, err := pushFetchTaskCappedScript.Run(ctx, c.rdb, []string{fetchQueueKey}, string(data), maxQueueSize).Result()
+	if err != nil {
+		return false, fmt.Errorf("push fetch task capped: %w", err)
+	}
+	return result.(int64) == 1, nil
 }
 
 func (c *Client) PopFetchTask(ctx context.Context) (models.FetchTask, error) {
@@ -149,6 +174,17 @@ func (c *Client) PushFailedTask(ctx context.Context, taskID string) error {
 func (c *Client) PushPermanentFailedTask(ctx context.Context, taskID string) error {
 	if err := c.rdb.RPush(ctx, permanentDLQKey, taskID).Err(); err != nil {
 		return fmt.Errorf("rpush permanent_failed_queue: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) PushFetchDLQTask(ctx context.Context, task models.FetchTask) error {
+	data, err := json.Marshal(task)
+	if err != nil {
+		return fmt.Errorf("marshal dlq task: %w", err)
+	}
+	if err := c.rdb.RPush(ctx, fetchDLQKey, data).Err(); err != nil {
+		return fmt.Errorf("rpush fetch_dlq: %w", err)
 	}
 	return nil
 }

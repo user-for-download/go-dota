@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -445,9 +446,6 @@ func (pm *ProxyManager) parseLocalProxies(data []byte) ([]string, error) {
 // ---------------------------------------------------------------------
 
 func (pm *ProxyManager) healthCheckProxies(ctx context.Context, proxies []string) []string {
-	pm.transportPool.CloseAll()
-
-	// Cap to keep first-cycle runtime bounded.
 	const maxToCheck = 500
 	if len(proxies) > maxToCheck {
 		proxies = proxies[:maxToCheck]
@@ -468,7 +466,7 @@ func (pm *ProxyManager) healthCheckProxies(ctx context.Context, proxies []string
 			}
 			defer pm.checkSemaphore.Release(1)
 
-			if pm.checkProxy(ctx, proxyURL) {
+			if pm.checkProxyIsolated(ctx, proxyURL) {
 				mu.Lock()
 				valid = append(valid, proxyURL)
 				mu.Unlock()
@@ -500,6 +498,36 @@ func (pm *ProxyManager) checkProxy(ctx context.Context, proxyURL string) bool {
 		return false
 	}
 	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func (pm *ProxyManager) checkProxyIsolated(ctx context.Context, proxyURL string) bool {
+	proxyParsed, err := url.Parse(proxyURL)
+	if err != nil {
+		pm.logger.Warn("invalid proxy URL", "proxy", proxyURL, "error", err)
+		return false
+	}
+	transport := &http.Transport{
+		Proxy:              http.ProxyURL(proxyParsed),
+		DisableKeepAlives:  true,
+		TLSClientConfig:    &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, pm.healthCheckURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		pm.logger.Debug("proxy health check failed", "proxy", proxyURL, "error", err)
+		return false
+	}
+	resp.Body.Close()
+	transport.CloseIdleConnections()
 	return resp.StatusCode == http.StatusOK
 }
 

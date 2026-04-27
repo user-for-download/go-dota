@@ -8,7 +8,6 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	os.Unsetenv("REDIS_URL")
 	os.Unsetenv("POSTGRES_URL")
-	os.Unsetenv("TARGET_API_URL")
 	os.Unsetenv("COLLECTOR_WORKERS")
 	os.Unsetenv("PARSER_WORKERS")
 	os.Unsetenv("PROXY_REFRESH_MIN")
@@ -29,7 +28,6 @@ func TestLoadDefaults(t *testing.T) {
 	}{
 		{cfg.RedisURL, "redis://localhost:6379/0"},
 		{cfg.PostgresURL, "postgres://postgres:postgres@localhost:5432/pipeline?sslmode=disable&pool_max_conns=20"},
-		{cfg.TargetAPIURL, "https://httpbin.org/json"},
 		{cfg.CollectorWorkers, 10},
 		{cfg.ParserWorkers, 5},
 		{cfg.ProxyRefreshMin, 15},
@@ -51,7 +49,6 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	envs := map[string]string{
 		"REDIS_URL":       "redis://custom:6379/1",
 		"POSTGRES_URL":   "postgres://user:pass@custom:5432/db",
-		"TARGET_API_URL":  "https://example.com/api",
 		"COLLECTOR_WORKERS":  "20",
 		"PARSER_WORKERS":    "8",
 		"PROXY_REFRESH_MIN": "30",
@@ -77,7 +74,6 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	}{
 		{cfg.RedisURL, "redis://custom:6379/1"},
 		{cfg.PostgresURL, "postgres://user:pass@custom:5432/db"},
-		{cfg.TargetAPIURL, "https://example.com/api"},
 		{cfg.CollectorWorkers, 20},
 		{cfg.ParserWorkers, 8},
 		{cfg.ProxyRefreshMin, 30},

@@ -1,180 +1,70 @@
-# Architecture - Data Pipeline
+1. **Fetcher** queries the explorer API, deduplicates against PostgreSQL, and pushes `FetchTask` messages onto `fetch_queue`.
+2. **Collector** workers pull tasks, fetch the full match JSON through a rotating proxy pool, and atomically store raw data + push a task ID to `parse_queue`.
+3. **Parser** workers deserialise, validate, and upsert matches into PostgreSQL using partitioned tables with advisory locks for idempotency.
+4. **Enricher** periodically syncs lookup data (heroes, items, patches, leagues, teams) from the OpenDota constants API.
+5. **Partition Manager** creates future quarterly partitions and optionally detaches/drops old data.
+6. **Monitor** exposes a health & metrics endpoint (queue lengths, DB counts).
 
-A distributed data collection pipeline using Go, Redis, and PostgreSQL.
+## Component Map
+| Service              | Entrypoint       | Role                                                      |
+|----------------------|------------------|-----------------------------------------------------------|
+| **proxy‑manager**    | `cmd/proxy‑manager`  | Populates Redis proxy pool (local file + provider API)   |
+| **fetcher**          | `cmd/fetcher`       | Discovers new match IDs and enqueues them                |
+| **collector**        | `cmd/collector`     | Downloads match JSON via proxies                         |
+| **parser**           | `cmd/parser`        | Ingests matches into PostgreSQL                          |
+| **enricher**         | `cmd/enricher`      | Refreshes lookup tables                                  |
+| **monitor**          | `cmd/monitor`       | HTTP health & metrics                                    |
+| **partition‑manager**| `cmd/partition‑manager` | Manages quarterly match partitions                  |
 
-## Overview
+## Technology Stack
+- **Language:** Go 1.24+
+- **Message Queue / Cache:** Redis (go‑redis) – queues, proxy pool, raw data storage
+- **Database:** PostgreSQL 16+ with **declarative partitioning** (RANGE on `start_time`, quarterly partitions)
+- **External API:** OpenDota (matches, explorer, constants)
+- **Deployment:** Docker Compose, separate images per service
 
-```
-[SQL] → [Fetcher] → [Redis: fetch_queue]
-                         ↓
-                   [Collector] → [Redis: parse_queue]
-                         ↓
-                    [Parser] → [PostgreSQL: parsed_data]
-```
+## Key Design Decisions
 
-## Components
+### 1. Queue‑Driven, At‑Least‑Once Processing
+Each step uses Redis lists (`fetch_queue`, `parse_queue`) with idempotent downstream operations:
+- Fetcher marks discovered IDs in a Redis seen‑set to avoid re‑push.
+- Collector atomically stores raw data and queues the task ID.
+- Parser uses `ON CONFLICT DO UPDATE` and advisory locks (`pg_try_advisory_xact_lock`) to make re‑ingestion safe.
 
-### Fetcher (`cmd/fetcher/main.go`)
-- One-shot CLI with `--key` flag (`leagues`, `players`, `teams`, `default`)
-- Loads SQL from `deployments/queries/{key}.sql`
-- Filters IDs against legacy PostgreSQL (`parsed_data` table)
-- Pushes FetchTask{MatchID, URL} to `fetch_queue`
-- Respects `MAX_QUEUE_SIZE` (default 10000)
-- Exits after all tasks or queue at capacity
+### 2. Proxy Rotation & Rate Limiting
+The **collector** uses a weighted random proxy selection implemented as a Redis Lua script.  
+Per‑proxy failure counters temporarily penalise proxies; persistent failures evict them.  
+Per‑proxy rate limits (req/min, req/day) are enforced atomically in Redis.
 
-### Collector (`cmd/collector/main.go`)
-- Workers consume from `fetch_queue` via BLPOP (5s timeout)
-- HTTP client with SOCKS5 proxy rotation via weighted random selection
-- Records proxy success/failure in Redis (adjusts scoring)
-- Re-enqueues tasks on HTTP 429 (rate limit)
+### 3. Partitioned Matches
+The `matches` table is partitioned by **quarter** (`start_time`) to keep scans efficient as data grows.  
+The primary key includes `start_time` to allow partition pruning.  
+Lookup tables (`heroes`, `items`, …) are not partitioned – they are small.
 
-### Parser (`cmd/parser/main.go`)
-- Consumes from `parse_queue` via BLPOP
-- Loads raw JSON from `raw_data:{taskID}`
-- Extracts ID from `id` field (fallback to `match_id`)
-- Upserts to PostgreSQL via LegacyRepository
-- On failure: INCR retry count, LPUSH to `failed_queue`
-- After max retries: RPUSH to `permanent_failed_queue`
-- DLQ recovery on startup (batch 100)
-- Periodic drain every 5min (batch 500)
+### 4. Lookup Table Stubs
+To decouple match ingestion from enrichment, stub rows are inserted `ON CONFLICT DO NOTHING` before inserting match data.  
+This satisfies foreign‑key constraints without requiring the enricher to have run.
 
-### ProxyManager (`cmd/proxy-manager/main.go`)
-- Fetches proxies from `PROXY_PROVIDER_URL` or reads `PROXY_LOCAL_FILE`
-- Health checks via `HEALTH_CHECK_URL` (semaphore 50 concurrent)
-- Merges local + provider proxies
-- Updates `proxy_pool` SET and `proxy_ranking` ZSET
-- Periodic refresh (default 15min)
+### 5. Validation & Poison Message Handling
+Match payloads are fully validated (positive IDs, player count, slot uniqueness).  
+Invalid messages are sent to `permanent_failed_queue` and never retried.
 
-### Monitor (`cmd/monitor/main.go`)
-- HTTP server on port `MONITOR_PORT` (default 8080)
-- GET `/health` - liveness check (Redis + Postgres ping)
-- GET `/metrics` - queue lengths, error counts
+## Database Schema Overview
+- **`matches`** – core match metadata, partitioned by `start_time` (quarterly).
+- **`player_matches`** – one row per player per match (hot path, columns for dashboards).
+- **`player_match_details`** – JSONB blobs with cold analytics (damage, wards, etc.).
+- **`match_objectives`, `match_chat`, `match_teamfights`** – event tables.
+- **`player_timeseries`** – per‑minute gold/xp/LH/DN for parsed matches.
+- **`teams`, `players`, `heroes`, `items`, `leagues`, `patches`** – enrichment data.
 
-## Data Flow
+Migrations are embedded (`internal/storage/postgres/migrations/`) and applied by the parser/fetcher startup.
 
-```
-1. Fetcher:
-   Load SQL → fetch IDs from OpenDota API → filter against DB → RPUSH to fetch_queue
+## Deployment
+All services are built from a shared base image (`Dockerfile.base`) and deployed via `docker‑compose.yml`.  
+Configuration is provided through environment variables (see `internal/config/config.go`).  
+The `monitor` service exposes a simple HTTP endpoint for liveness and metrics.
 
-2. Collector:
-   BLPOP → HTTP GET URL → SET raw_data:{taskID} → RPUSH taskID to parse_queue
-
-3. Parser:
-   BLPOP → GET raw_data → parse JSON → PG upsert → DEL raw_data
-
-4. On error:
-   INCR retry_count → Extend raw_data TTL → LPUSH to failed_queue
-
-5. DLQ drain:
-   LPop from failed_queue → check retry_count
-   → if < max: RPUSH to parse_queue
-   → else: RPUSH to permanent_failed_queue
-```
-
-## Proxy Scoring (`internal/storage/redis/proxy.go`)
-
-- **Initial**: 1000 (from ZADD on AddProxies)
-- **Success**: `+1` (capped at 10000)
-- **Failure**: `-penalty × fails` (penalty = 10, capped at 0)
-- After max fails (≥3): score = -1000, removed from pool
-- **Selection**: weighted random via Lua script
-
-Lua script `weightedRandomProxyScript` handles scoring + selection atomically.
-
-## Rate Limiting (`internal/storage/redis/ratelimit.go`)
-
-Per-proxy limits via Lua script atomically:
-- `proxy_req_min:{IP}` - INCR, EXPIRE 60s
-- `proxy_req_day:{IP}` - INCR, EXPIRE 86400s
-
-Skips limiting if max = 0 (unlimited).
-
-## Config (`internal/config/config.go`)
-
-```go
-type Config struct {
-    RedisURL           string  // redis://localhost:6379/0
-    PostgresURL        string  // postgres://...
-    LegacyPostgresURL  string  // postgres://...:5433/legacy
-    TargetAPIURL      string  // https://httpbin.org/json
-    ProxyProviderURL  string  // ""
-    ProxyLocalFile    string  // deployments/proxy.json
-    SQLDir            string  // deployments/queries
-    CollectorWorkers  int     // 10
-    ParserWorkers     int      // 5
-    ProxyRefreshMin   int     // 15
-    HealthCheckURL   string   // https://httpbin.org/ip
-    SkipTLSVerify    bool    // false
-    MonitorPort      int     // 8080
-    DLQBatchSize     int     // 100
-    DLQMaxPerTick   int     // 500
-    MaxRetries      int     // 3
-    MaxProxyFails   int     // 3
-    MaxProxyReqPerMin int   // 60
-    MaxProxyReqPerDay int   // 3000
-    MaxQueueSize    int64    // 10000
-}
-```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `cmd/fetcher/main.go` | Entry point |
-| `cmd/collector/main.go` | Entry point |
-| `cmd/parser/main.go` | Entry point |
-| `cmd/monitor/main.go` | HTTP server |
-| `cmd/proxy-manager/main.go` | Entry point |
-| `internal/worker/collector.go` | Worker loop, proxy rotation |
-| `internal/worker/fetcher.go` | Queue capacity, ID filtering |
-| `internal/worker/parser.go` | DLQ drain |
-| `internal/worker/proxy_manager.go` | Proxy refresh |
-| `internal/storage/redis/client.go` | Client + config |
-| `internal/storage/redis/proxy.go` | Pool + scoring |
-| `internal/storage/redis/ratelimit.go` | Rate limit Lua |
-| `internal/storage/redis/queue.go` | Queue ops |
-| `internal/storage/postgres/client.go` | PG client |
-| `internal/storage/postgres/repository.go` | PG repository |
-| `internal/storage/postgres/legacy_repository.go` | Legacy parsed_data |
-| `internal/models/models.go` | FetchTask, APIResponse |
-| `internal/config/config.go` | Env config |
-| `internal/httpx/client.go` | HTTP client |
-| `internal/httpx/transport_pool.go` | SOCKS5 transport |
-| `deployments/queries/*.sql` | Fetch SQL queries |
-
-## Database Schema
-
-```sql
-CREATE TABLE IF NOT EXISTS parsed_data (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    external_id VARCHAR(255) UNIQUE NOT NULL,
-    payload JSONB NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## Redis Keys
-
-| Key | Type | Purpose | TTL |
-|-----|------|---------|-----|
-| `proxy_pool` | SET | Active proxies |
-| `proxy_ranking` | ZSET | Proxy scores (0-10000) |
-| `fetch_queue` | LIST | Tasks to collect (RPUSH) |
-| `parse_queue` | LIST | Tasks to parse (RPUSH) |
-| `failed_queue` | LIST | Retryable DLQ (LPUSH - LIFO) |
-| `permanent_failed_queue` | LIST | Max retries exceeded |
-| `raw_data:{TaskID}` | STRING | JSON payload | 7200s |
-| `seen_fetch_ids` | SET | Fetch deduplication | 86400s |
-| `seen_parse_ids` | SET | Parse deduplication | 86400s |
-| `proxy_req_min:{IP}` | STRING | Per-minute rate limit | 60s |
-| `proxy_req_day:{IP}` | STRING | Per-day rate limit | 86400s |
-| `proxy_failures:{Proxy}` | STRING | Consecutive failure count |
-| `retry_count:{TaskID}` | STRING | Retry count | 86400s |
-
-## Docker
-
-```bash
-docker compose -f deployments/docker-compose.yml --profile all up -d
-```
-
-Services: redis, postgres, fetcher, collector, parser, proxy-manager, monitor
+## Future Improvements
+- Add a bloom filter in Redis for fast match‑ID deduplication before PostgreSQL.
+- Use a reference‑counted transport pool to avoid closing connections in use.
+- Implement a dead‑letter queue for fetch tasks to match the parser DLQ.

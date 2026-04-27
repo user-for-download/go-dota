@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.25-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked go mod download
-COPY . .
+FROM od-base-local AS builder
 RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     CGO_ENABLED=0 GOOS=linux go build -o /bin/parser ./cmd/parser
 
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates
+RUN adduser -D -u 10001 app
 WORKDIR /app
 COPY --from=builder /bin/parser /bin/parser
-COPY --from=builder /app/deployments/queries /app/deployments/queries
+# Force Docker to detect changes in migrations
+COPY internal/storage/postgres/migrations/ /app/internal/storage/postgres/migrations/
+RUN echo "Migrations: " && ls -1 /app/internal/storage/postgres/migrations/
+USER app
 ENTRYPOINT ["/bin/parser"]

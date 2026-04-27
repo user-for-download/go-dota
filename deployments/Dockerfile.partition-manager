@@ -1,15 +1,13 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.25-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked go mod download
-COPY . .
+FROM od-base-local AS builder
 RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     CGO_ENABLED=0 GOOS=linux go build -o /bin/partition-manager ./cmd/partition-manager
 
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates
+RUN adduser -D -u 10001 app
 WORKDIR /app
 COPY --from=builder /bin/partition-manager /bin/partition-manager
+USER app
 ENTRYPOINT ["/bin/partition-manager"]

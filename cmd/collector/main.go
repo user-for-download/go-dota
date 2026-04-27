@@ -43,7 +43,6 @@ func main() {
 
 	collector := worker.NewCollector(
 		redisClient,
-		cfg.TargetAPIURL,
 		cfg.CollectorWorkers,
 		log,
 		cfg.SkipTLSVerify,

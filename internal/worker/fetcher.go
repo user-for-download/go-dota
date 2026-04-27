@@ -81,29 +81,11 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		return fmt.Errorf("filter match ids: %w", err)
 	}
 
-	queueLen, err := f.redisClient.GetQueueLen(ctx)
-	if err != nil {
-		f.logger.Warn("failed to get queue length", "error", err)
-	} else if queueLen >= f.maxQueueSize {
-		f.logger.Warn("fetch queue at capacity, skipping push",
-			"queue_size", queueLen, "max", f.maxQueueSize)
-		return nil
-	}
-
-	f.logger.Info("queue capacity check passed, starting push")
+	f.logger.Info("starting task push")
 
 	pushed := 0
 	pushedIDs := make([]int64, 0, len(unknownIDs))
 	for _, id := range unknownIDs {
-		queueLen, err := f.redisClient.GetQueueLen(ctx)
-		if err != nil {
-			f.logger.Warn("GetQueueLen failed during push", "error", err)
-		} else if queueLen >= f.maxQueueSize {
-			f.logger.Warn("queue reached capacity during push, stopping",
-				"queue_size", queueLen, "max", f.maxQueueSize)
-			break
-		}
-
 		idStr := strconv.FormatInt(id, 10)
 
 		seen, err := f.redisClient.IsFetchIDSeen(ctx, idStr)
@@ -118,9 +100,15 @@ func (f *Fetcher) Run(ctx context.Context) error {
 			MatchID: idStr,
 			URL:     fmt.Sprintf("https://api.opendota.com/api/matches/%d", id),
 		}
-		if err := f.redisClient.PushFetchTask(ctx, task); err != nil {
+
+		ok, err := f.redisClient.PushFetchTaskWithCap(ctx, task, f.maxQueueSize)
+		if err != nil {
 			f.logger.Error("push task failed", "match_id", id, "error", err)
 			continue
+		}
+		if !ok {
+			f.logger.Warn("fetch queue full, stopping push", "queue_size", f.maxQueueSize)
+			break
 		}
 		pushedIDs = append(pushedIDs, id)
 		pushed++

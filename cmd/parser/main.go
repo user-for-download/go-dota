@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +15,9 @@ import (
 )
 
 func main() {
+	migrateOnly := flag.Bool("migrate-only", false, "run database migrations and exit")
+	flag.Parse()
+
 	log := logger.Init()
 	log.Info("starting parser")
 
@@ -25,19 +29,6 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	redisClient, err := redisstore.NewClientWithConfig(ctx, cfg.RedisURL, redisstore.ClientConfig{
-		MaxRetryCount: cfg.MaxRetries,
-	})
-	if err != nil {
-		log.Error("failed to connect to redis", "error", err)
-		os.Exit(1)
-	}
-	defer func(redisClient *redisstore.Client) {
-		if err := redisClient.Close(); err != nil {
-			log.Error("redisClient close", "error", err)
-		}
-	}(redisClient)
 
 	pgClient, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -51,6 +42,24 @@ func main() {
 		log.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
+
+	if *migrateOnly {
+		log.Info("migrations complete – exiting")
+		return
+	}
+
+	redisClient, err := redisstore.NewClientWithConfig(ctx, cfg.RedisURL, redisstore.ClientConfig{
+		MaxRetryCount: cfg.MaxRetries,
+	})
+	if err != nil {
+		log.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer func(redisClient *redisstore.Client) {
+		if err := redisClient.Close(); err != nil {
+			log.Error("redisClient close", "error", err)
+		}
+	}(redisClient)
 
 	parser := worker.NewParser(
 		redisClient, repo, cfg.ParserWorkers, log,

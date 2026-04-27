@@ -29,7 +29,6 @@ import (
 // a shared breaker was observed to deadlock under burst failures.
 type Collector struct {
 	redisClient    *redis.Client
-	targetAPIURL string
 	numWorkers   int
 	logger      *slog.Logger
 	httpClient   *httpx.ProxiedClient
@@ -40,7 +39,6 @@ type Collector struct {
 
 func NewCollector(
 	redisClient *redis.Client,
-	targetAPIURL string,
 	numWorkers int,
 	logger *slog.Logger,
 	skipTLSVerify bool,
@@ -64,7 +62,6 @@ func NewCollector(
 
 	return &Collector{
 		redisClient:        redisClient,
-		targetAPIURL:      targetAPIURL,
 		numWorkers:       numWorkers,
 		logger:           logger,
 		httpClient:       httpx.NewProxiedClient(pool, 15*time.Second),
@@ -232,8 +229,12 @@ if rateLimitRetries >= c.maxRateLimitRetries {
 		return
 	}
 
-	c.logger.Warn("task exhausted retries, dropping",
+	c.logger.Warn("task exhausted retries, sending to DLQ",
 		"worker_id", workerID, "url", task.URL)
+	if err := c.redisClient.PushFetchDLQTask(ctx, task); err != nil {
+		c.logger.Error("failed to push task to fetch DLQ",
+			"worker_id", workerID, "error", err)
+	}
 }
 
 func jitteredSleep(base time.Duration) time.Duration {

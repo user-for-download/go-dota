@@ -1,189 +1,194 @@
-  services:
-    redis:
-      image: redis:7-alpine
-      profiles:
-        - all
-        - db
-      restart: unless-stopped
-      ports:
-        - "6379:6379"
-      volumes:
-        - redis-data:/data
-      healthcheck:
-        test: ["CMD", "redis-cli", "ping"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
+services:
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - all
+      - db
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    postgres:
-      image: postgres:15-alpine
-      profiles:
-        - all
-        - db
-      restart: unless-stopped
-      environment:
-        POSTGRES_DB: pipeline
-        POSTGRES_USER: postgres
-        POSTGRES_PASSWORD: postgres
-      ports:
-        - "5432:5432"
-      volumes:
-        - pg-data:/var/lib/postgresql/data
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U postgres -d pipeline"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
+  postgres:
+    image: postgres:15-alpine
+    profiles:
+      - all
+      - db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pipeline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    proxy-manager:
-#      image: go-dota/proxy-manager:latest
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.proxy-manager
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-      volumes:
-        - ./proxy.json:/app/deployments/proxy.json:ro
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        PROXY_PROVIDER_URL: ${PROXY_PROVIDER_URL:-}
-        PROXY_LOCAL_FILE: /app/deployments/proxy.json
-        HEALTH_CHECK_URL: https://httpbin.org/ip
-        PROXY_REFRESH_MIN: "15"
+  migrate:
+    profiles:
+      - all
+      - go
+      - init
+    image: deployments-parser:latest
+    entrypoint: ["/bin/parser", "--migrate-only"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
-collector:
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.collector
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-        enricher-init:
-          condition: service_completed_successfully
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        TARGET_API_URL: https://api.opendota.com/api/matches
-        COLLECTOR_WORKERS: "10"
-        SKIP_TLS_VERIFY: "false"
+  proxy-manager:
+    image: deployments-proxy-manager:latest
+    profiles:
+      - all
+      - go
+      - proxy
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./proxy.json:/app/deployments/proxy.json:ro
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      PROXY_PROVIDER_URL: ${PROXY_PROVIDER_URL:-}
+      PROXY_LOCAL_FILE: /app/deployments/proxy.json
+      HEALTH_CHECK_URL: https://httpbin.org/ip
+      PROXY_REFRESH_MIN: "15"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "redis", "LLEN", "proxy_pool"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
-    parser:
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.parser
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-        postgres:
-          condition: service_healthy
-        enricher-init:
-          condition: service_completed_successfully
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable&pool_max_conns=20
-        PARSER_WORKERS: "5"
+  collector:
+    image: deployments-collector:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      COLLECTOR_WORKERS: "10"
+      SKIP_TLS_VERIFY: "false"
 
-    fetcher:
-      profiles:
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.fetcher
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-        postgres:
-          condition: service_healthy
-        enricher-init:
-          condition: service_completed_successfully
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
-        SQL_DIR: /app/deployments/queries
+  parser:
+    image: deployments-parser:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable&pool_max_conns=20
+      PARSER_WORKERS: "5"
 
-    monitor:
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.monitor
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-        postgres:
-          condition: service_healthy
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable&pool_max_conns=20
-        MONITOR_PORT: "8080"
-      ports:
-        - "8080:8080"
+  fetcher:
+    image: deployments-fetcher:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
+      SQL_DIR: /app/deployments/queries
 
-    enricher:
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.enricher
-      restart: unless-stopped
-      depends_on:
-        redis:
-          condition: service_healthy
-        postgres:
-          condition: service_healthy
-      environment:
-        REDIS_URL: redis://redis:6379/0
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
-        ENRICHER_INTERVAL: 24h
+  monitor:
+    image: deployments-monitor:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable&pool_max_conns=20
+      MONITOR_PORT: "8080"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-    enricher-init:
-      profiles:
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.enricher
-      entrypoint: ["/bin/enricher", "--once"]
-      depends_on:
-        postgres:
-          condition: service_healthy
-      environment:
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
-        REDIS_URL: redis://redis:6379/0
+  enricher:
+    image: deployments-enricher:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    command: ["/bin/enricher", "--interval=24h"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
-    partition-manager:
-      profiles:
-        - all
-        - go
-      build:
-        context: ..
-        dockerfile: deployments/Dockerfile.partition-manager
-      restart: unless-stopped
-      depends_on:
-        postgres:
-          condition: service_healthy
-      environment:
-        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
-        PARTITION_AHEAD_MONTHS: "3"
-        PARTITION_RETENTION_MONTHS: "0"
-        PARTITION_DETACH_ONLY: "true"
-        PARTITION_CHECK_INTERVAL: 24h
+  enricher-init:
+    image: deployments-enricher:latest
+    profiles:
+      - all
+      - init
+      - go
+    restart: "no"
+    entrypoint: ["/bin/enricher", "--once"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      proxy-manager:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
 
-  volumes:
-    redis-data:
-    pg-data:
+  partition-manager:
+    image: deployments-partition-manager:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    command: ["/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
+
+volumes:
+  redis-data:
+  pg-data:

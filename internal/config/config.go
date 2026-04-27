@@ -5,7 +5,6 @@ import "github.com/ilyakaznacheev/cleanenv"
 type Config struct {
 	RedisURL           string `env:"REDIS_URL" env-default:"redis://localhost:6379/0"`
 	PostgresURL       string `env:"POSTGRES_URL" env-default:"postgres://postgres:postgres@localhost:5432/pipeline?sslmode=disable&pool_max_conns=20"`
-	TargetAPIURL     string `env:"TARGET_API_URL" env-default:"https://httpbin.org/json"`
 	ProxyProviderURL string `env:"PROXY_PROVIDER_URL" env-default:""`
 	ProxyLocalFile   string `env:"PROXY_LOCAL_FILE" env-default:"deployments/proxy.json"`
 	SQLDir           string `env:"SQL_DIR" env-default:"deployments/queries"`
