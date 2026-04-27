@@ -37,7 +37,6 @@ services:
 
   migrate:
     profiles:
-      - all
       - go
       - init
     image: deployments-parser:latest
@@ -107,7 +106,6 @@ services:
     image: deployments-fetcher:latest
     profiles:
       - fetch
-      - db
       - go
     restart: unless-stopped
     depends_on:
@@ -160,35 +158,34 @@ services:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
-  enricher-init:
-    image: deployments-enricher:latest
-    profiles:
-      - all
-      - init
-      - go
-    restart: "no"
-    entrypoint: ["/bin/enricher", "--once"]
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      proxy-manager:
-        condition: service_healthy
-    environment:
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
-
-#  partition-manager:
-#    image: deployments-partition-manager:latest
+#  enricher-init:
+#    image: deployments-enricher:latest
 #    profiles:
-#      - all
+#      - init
 #      - go
-#    restart: unless-stopped
-#    command: ["/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h"]
+#    restart: "no"
+#    entrypoint: ["/bin/enricher", "--once"]
 #    depends_on:
-#      postgres:
+#      migrate:
+#        condition: service_completed_successfully
+#      proxy-manager:
 #        condition: service_healthy
 #    environment:
 #      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
+#      REDIS_URL: redis://redis:6379/0
+
+  partition-manager:
+    image: deployments-partition-manager:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    command: ["/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
 volumes:
   redis-data:

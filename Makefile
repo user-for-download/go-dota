@@ -43,8 +43,10 @@ down: ## Stop and remove containers
 downv: ## Stop and remove containers and volumes
 	docker compose -f $(COMPOSE_FILE)  --profile all down -v
 
-fetcher:
-	docker compose -f deployments/docker-compose.yml run --rm fetcher --key=default --profile db
+fetch:
+	docker compose -f deployments/docker-compose.yml \
+	  --profile db --profile fetch \
+	  run --rm fetcher --key=default
 
 restart: down upd ## Restart the pipeline (detached)
 

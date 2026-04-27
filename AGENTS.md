@@ -33,9 +33,10 @@ To run locally without Docker, start Redis + PostgreSQL, then launch each servic
 ## Working with this Codebase
 1. **Adding a new service**: Create a `cmd/<name>/main.go` that loads config, clients, and runs a worker loop. Implement the worker logic in `internal/worker/<name>.go`. Add a Dockerfile and service entry in `docker‑compose.yml`.
 2. **Extending the data model**:
-  - If the OpenDota API changes, update `internal/models/match.go` (new fields must be nullable/pointer unless always present).
-  - Update the matching upsert queries in `internal/storage/postgres/repository_*.go`.
-  - If adding a new table, create a migration in `internal/storage/postgres/migrations/` (prefix with a sequence number).
+   - If the OpenDota API changes, update `internal/models/match.go` (new fields must be nullable/pointer unless always present).
+   - Update the matching upsert queries in `internal/storage/postgres/repository_*.go`.
+   - If adding a new table, create a migration in `internal/storage/postgres/migrations/` (prefix with a sequence number).
+   - When modifying existing tables, write idempotent migration SQL (e.g., `ALTER TABLE ... DROP CONSTRAINT IF EXISTS`). Never use CHECK constraints on API-derived columns (OpenDota tier values have expanded beyond the original enum).
 3. **Adding a new queue**: Define the Redis keys in `internal/storage/redis/queue.go`, add relevant push/pop methods, and wire them into workers. Use atomic Lua scripts for consistency where needed.
 4. **Testing**: Currently limited. When adding tests, place them next to the package under test (e.g., `internal/worker/collector_test.go`). Use `testcontainers‑go` for integration tests with real Redis/Postgres.
 5. **Configuration**: All tunables come from environment variables. Never hard‑code hostnames, ports, or credentials. The `config.Config` struct is the single source of truth.
