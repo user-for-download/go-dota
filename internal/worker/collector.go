@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -27,12 +28,14 @@ import (
 // stall every worker; the per-proxy signal + pool rotation is sufficient, and
 // a shared breaker was observed to deadlock under burst failures.
 type Collector struct {
-	redisClient   *redis.Client
-	targetAPIURL  string
-	numWorkers    int
-	logger        *slog.Logger
-	httpClient    *httpx.ProxiedClient
+	redisClient    *redis.Client
+	targetAPIURL string
+	numWorkers   int
+	logger      *slog.Logger
+	httpClient   *httpx.ProxiedClient
 	maxProxyFails int
+	maxRetries   int
+	maxRateLimitRetries int
 }
 
 func NewCollector(
@@ -42,6 +45,8 @@ func NewCollector(
 	logger *slog.Logger,
 	skipTLSVerify bool,
 	maxProxyFails int,
+	maxRetries int,
+	maxRateLimitRetries int,
 ) *Collector {
 	opts := httpx.DefaultOptions()
 	opts.SkipTLSVerify = skipTLSVerify
@@ -50,14 +55,22 @@ func NewCollector(
 	if maxProxyFails <= 0 {
 		maxProxyFails = redis.DefaultMaxProxyFails
 	}
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+	if maxRateLimitRetries <= 0 {
+		maxRateLimitRetries = 20
+	}
 
 	return &Collector{
-		redisClient:   redisClient,
-		targetAPIURL:  targetAPIURL,
-		numWorkers:    numWorkers,
-		logger:        logger,
-		httpClient:    httpx.NewProxiedClient(pool, 15*time.Second),
-		maxProxyFails: maxProxyFails,
+		redisClient:        redisClient,
+		targetAPIURL:      targetAPIURL,
+		numWorkers:       numWorkers,
+		logger:           logger,
+		httpClient:       httpx.NewProxiedClient(pool, 15*time.Second),
+		maxProxyFails:     maxProxyFails,
+		maxRetries:       maxRetries,
+		maxRateLimitRetries: maxRateLimitRetries,
 	}
 }
 
@@ -110,15 +123,10 @@ func (c *Collector) worker(ctx context.Context, id int) {
 //   - exhaustion: log and drop; the fetcher layer's seen-set prevents
 //     immediate re-queue of the same match
 func (c *Collector) processTask(ctx context.Context, task models.FetchTask, workerID int) {
-	const (
-		maxRetries          = 5
-		maxRateLimitRetries = 20
-	)
-
 	noProxyCounter := 0
 	rateLimitRetries := 0
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := 0; attempt < c.maxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
 			return
@@ -139,7 +147,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(jitteredSleep(time.Second)):
 			}
 			continue
 		}
@@ -152,7 +160,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second):
+			case <-time.After(jitteredSleep(2 * time.Second)):
 			}
 			continue
 		}
@@ -170,22 +178,22 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 				"worker_id", workerID, "proxy", proxyURL,
 				"rate_limit_retries", rateLimitRetries)
 
-			if rateLimitRetries >= maxRateLimitRetries {
-				c.logger.Warn("too many rate limits, re-enqueueing task for later",
-					"worker_id", workerID, "url", task.URL)
-				if err := c.redisClient.PushFetchTask(ctx, task); err != nil {
-					c.logger.Error("failed to re-enqueue task after rate limit exhaustion",
-						"worker_id", workerID, "task", task.URL, "error", err)
-				}
-				return
+if rateLimitRetries >= c.maxRateLimitRetries {
+			c.logger.Warn("too many rate limits, re-enqueueing task for later",
+				"worker_id", workerID, "url", task.URL)
+			if err := c.redisClient.PushFetchTask(ctx, task); err != nil {
+				c.logger.Error("failed to re-enqueue task after rate limit exhaustion",
+					"worker_id", workerID, "task", task.URL, "error", err)
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
+			return
 		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(jitteredSleep(time.Second)):
+		}
+		continue
+	}
 
 		// Do the fetch.
 		resp, err := c.httpClient.Get(ctx, task.URL, proxyURL)
@@ -226,4 +234,15 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 
 	c.logger.Warn("task exhausted retries, dropping",
 		"worker_id", workerID, "url", task.URL)
+}
+
+func jitteredSleep(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	quarter := int64(base / 4)
+	if quarter <= 0 {
+		return base
+	}
+	return base + time.Duration(rand.Int63n(quarter))
 }

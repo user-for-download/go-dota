@@ -191,35 +191,73 @@ func (c *Client) RequeueFailedTasks(ctx context.Context) (int64, error) {
 	return c.RequeueFailedTasksBatch(ctx, 100)
 }
 
-// RequeueFailedTasksBatch requeues failed tasks (LIFO order — newest failures first).
-// Poison pills (retries >= maxRetryCount) are moved to permanent_failed_queue via RPush.
-func (c *Client) RequeueFailedTasksBatch(ctx context.Context, batchSize int) (int64, error) {
-	var count int64
-	for i := 0; i < batchSize; i++ {
-		taskID, err := c.rdb.LPop(ctx, failedTasksQueueKey).Result()
-		if errors.Is(err, goredis.Nil) {
+var requeueFailedTasksScript = goredis.NewScript(`
+	local failedKey = KEYS[1]
+	local parseKey = KEYS[2]
+	local permKey = KEYS[3]
+	local retryPrefix = ARGV[1]
+	local maxRetries = tonumber(ARGV[2])
+	local batchSize = tonumber(ARGV[3])
+
+	local count = 0
+	for i = 1, batchSize do
+		local taskID = redis.call("LPOP", failedKey)
+		if not taskID then
 			break
-		} else if err != nil {
-			return count, err
-		}
+		end
 
-		retryCount, _ := c.GetRetryCount(ctx, taskID)
-		if retryCount >= int64(c.cfg.MaxRetryCount) {
-			_ = c.rdb.RPush(ctx, permanentDLQKey, taskID).Err()
-			continue
-		}
+		local retryKey = retryPrefix .. taskID
+		local retryCount = tonumber(redis.call("GET", retryKey) or "0")
 
-		if err := c.PushParseTask(ctx, taskID); err != nil {
-			return count, err
-		}
-		count++
+		-- retryCount is incremented by Go BEFORE push to failed_queue
+		-- retryCount=1 means this was the 1st failure, so allow exactly maxRetries failures
+		-- e.g., maxRetries=3: fail at 1,2,3 → requeue; fail at 4 → permanent
+		if retryCount >= maxRetries then
+			redis.call("RPUSH", permKey, taskID)
+			redis.call("DEL", retryKey)
+		else
+			redis.call("RPUSH", parseKey, taskID)
+		end
+		count = count + 1
+	end
+	return count
+`)
+
+func (c *Client) RequeueFailedTasksBatch(ctx context.Context, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100
 	}
-	return count, nil
+
+	result, err := requeueFailedTasksScript.Run(
+		ctx, c.rdb,
+		[]string{failedTasksQueueKey, parseQueueKey, permanentDLQKey},
+		retryCountPrefix, c.cfg.MaxRetryCount, batchSize,
+	).Result()
+	if err != nil {
+		return 0, fmt.Errorf("requeue failed tasks: %w", err)
+	}
+	return result.(int64), nil
 }
 
 func (c *Client) MarkFetchIDSeen(ctx context.Context, id string) error {
 	pipe := c.rdb.Pipeline()
 	pipe.SAdd(ctx, seenSetFetchKey, id)
+	pipe.Expire(ctx, seenSetFetchKey, seenSetFetchTTL)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (c *Client) MarkFetchIDSeenBatch(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Convert []string to []interface{} for go-redis
+	iface := make([]interface{}, len(ids))
+	for i, id := range ids {
+		iface[i] = id
+	}
+	pipe := c.rdb.Pipeline()
+	pipe.SAdd(ctx, seenSetFetchKey, iface...)
 	pipe.Expire(ctx, seenSetFetchKey, seenSetFetchTTL)
 	_, err := pipe.Exec(ctx)
 	return err

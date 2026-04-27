@@ -86,3 +86,17 @@ func MonthBounds(t time.Time) (int64, int64) {
 	end := start.AddDate(0, 1, 0)
 	return start.Unix(), end.Unix()
 }
+
+func QuarterPartitionName(t time.Time) string {
+	quarter := (int(t.Month())-1)/3 + 1
+	return fmt.Sprintf("matches_%04d_q%d", t.Year(), quarter)
+}
+
+func QuarterBounds(t time.Time) (int64, int64) {
+	t = t.UTC()
+	quarter := (int(t.Month()) - 1) / 3
+	startMonth := time.Month(quarter*3 + 1)
+	start := time.Date(t.Year(), startMonth, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 3, 0)
+	return start.Unix(), end.Unix()
+}

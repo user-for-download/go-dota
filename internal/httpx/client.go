@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+const (
+	MaxBodySize = 50 << 20 // 50MB limit for API responses
+)
+
 type ProxiedClient struct {
 	pool    *TransportPool
 	timeout time.Duration
@@ -49,7 +53,8 @@ func (c *ProxiedClient) Get(ctx context.Context, targetURL, proxyURL string) (*R
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	limitedReader := io.LimitReader(resp.Body, MaxBodySize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", err)
 	}

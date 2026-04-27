@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -58,23 +59,60 @@ func upsertPlayerMatchDetailsTx(ctx context.Context, tx pgx.Tx, m *models.Match)
 		return nil
 	}
 
-	for _, p := range m.Players {
-		const q = `
-			INSERT INTO player_match_details (match_id, player_slot, damage, purchase_log)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (match_id, player_slot) DO UPDATE SET
-				damage = COALESCE(EXCLUDED.damage, player_match_details.damage),
-				purchase_log = COALESCE(EXCLUDED.purchase_log, player_match_details.purchase_log)`
+	cols := []string{
+		"match_id", "player_slot",
+		"damage", "damage_taken", "damage_inflictor", "damage_inflictor_received", "damage_targets",
+		"hero_hits", "max_hero_hit", "ability_uses", "ability_targets", "item_uses",
+		"gold_reasons", "xp_reasons",
+		"killed", "killed_by", "kill_streaks", "multi_kills", "life_state",
+		"lane_pos", "obs", "sen", "actions", "pings", "runes", "purchase",
+		"obs_log", "sen_log", "obs_left_log", "sen_left_log",
+		"purchase_log", "kills_log", "buyback_log", "runes_log", "connection_log",
+		"permanent_buffs", "neutral_tokens_log", "neutral_item_history", "additional_units",
+	}
 
-		_, err := tx.Exec(ctx, q,
+	for _, p := range m.Players {
+		args := []interface{}{
 			m.MatchID, p.PlayerSlot,
-			rawOrNil(p.Damage), rawOrNil(p.PurchaseLog),
+			rawOrNil(p.Damage), rawOrNil(p.DamageTaken), rawOrNil(p.DamageInflictor), rawOrNil(p.DamageInflictorReceived), rawOrNil(p.DamageTargets),
+			rawOrNil(p.HeroHits), rawOrNil(p.MaxHeroHit), rawOrNil(p.AbilityUses), rawOrNil(p.AbilityTargets), rawOrNil(p.ItemUses),
+			rawOrNil(p.GoldReasons), rawOrNil(p.XPReasons),
+			rawOrNil(p.Killed), rawOrNil(p.KilledBy), rawOrNil(p.KillStreaks), rawOrNil(p.MultiKills), rawOrNil(p.LifeState),
+			rawOrNil(p.LanePos), rawOrNil(p.Obs), rawOrNil(p.Sen), rawOrNil(p.Actions), rawOrNil(p.Pings), rawOrNil(p.Runes), rawOrNil(p.Purchase),
+			rawOrNil(p.ObsLog), rawOrNil(p.SenLog), rawOrNil(p.ObsLeftLog), rawOrNil(p.SenLeftLog),
+			rawOrNil(p.PurchaseLog), rawOrNil(p.KillsLog), rawOrNil(p.BuybackLog), rawOrNil(p.RunesLog), rawOrNil(p.ConnectionLog),
+			rawOrNil(p.PermanentBuffs), rawOrNil(p.NeutralTokensLog), rawOrNil(p.NeutralItemHistory), rawOrNil(p.AdditionalUnits),
+		}
+
+		setClauses := make([]string, 0, len(cols)-2)
+		for _, c := range cols[2:] {
+			setClauses = append(setClauses, fmt.Sprintf("%s = COALESCE(EXCLUDED.%s, player_match_details.%s)", c, c, c))
+		}
+
+		q := fmt.Sprintf(`
+			INSERT INTO player_match_details (%s)
+			VALUES (%s)
+			ON CONFLICT (match_id, player_slot) DO UPDATE SET
+				%s`,
+			strings.Join(cols, ", "),
+			strings.Join(makePlaceholders(len(cols)), ", "),
+			strings.Join(setClauses, ", "),
 		)
+
+		_, err := tx.Exec(ctx, q, args...)
 		if err != nil {
 			return fmt.Errorf("player_match_details slot=%d: %w", p.PlayerSlot, err)
 		}
 	}
 	return nil
+}
+
+func makePlaceholders(n int) []string {
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return out
 }
 
 // rawOrNil converts an empty RawMessage to nil so pgx writes SQL NULL.

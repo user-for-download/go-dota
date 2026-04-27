@@ -56,8 +56,7 @@
         HEALTH_CHECK_URL: https://httpbin.org/ip
         PROXY_REFRESH_MIN: "15"
 
-    collector:
-#      image: go-dota/collector:latest
+collector:
       profiles:
         - all
         - go
@@ -68,6 +67,8 @@
       depends_on:
         redis:
           condition: service_healthy
+        enricher-init:
+          condition: service_completed_successfully
       environment:
         REDIS_URL: redis://redis:6379/0
         TARGET_API_URL: https://api.opendota.com/api/matches
@@ -87,6 +88,8 @@
           condition: service_healthy
         postgres:
           condition: service_healthy
+        enricher-init:
+          condition: service_completed_successfully
       environment:
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable&pool_max_conns=20
@@ -104,6 +107,8 @@
           condition: service_healthy
         postgres:
           condition: service_healthy
+        enricher-init:
+          condition: service_completed_successfully
       environment:
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
@@ -146,6 +151,20 @@
         REDIS_URL: redis://redis:6379/0
         POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
         ENRICHER_INTERVAL: 24h
+
+    enricher-init:
+      profiles:
+        - go
+      build:
+        context: ..
+        dockerfile: deployments/Dockerfile.enricher
+      entrypoint: ["/bin/enricher", "--once"]
+      depends_on:
+        postgres:
+          condition: service_healthy
+      environment:
+        POSTGRES_URL: postgres://postgres:postgres@postgres:5432/pipeline?sslmode=disable
+        REDIS_URL: redis://redis:6379/0
 
     partition-manager:
       profiles:

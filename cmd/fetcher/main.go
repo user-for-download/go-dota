@@ -26,10 +26,7 @@ func main() {
 		validKeys[k] = true
 	}
 	if !validKeys[*key] {
-		_, err := fmt.Fprintf(os.Stderr, "Invalid --key value. Allowed values: %v\n", allowedKeys)
-		if err != nil {
-			return
-		}
+		fmt.Fprintf(os.Stderr, "Invalid --key value. Allowed values: %v\n", allowedKeys)
 		os.Exit(1)
 	}
 

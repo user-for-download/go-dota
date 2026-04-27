@@ -5,7 +5,7 @@ import (
 )
 
 func TestNewCollector(t *testing.T) {
-	collector := NewCollector(nil, "https://example.com", 5, nil, false, 3)
+	collector := NewCollector(nil, "https://example.com", 5, nil, false, 3, 5, 20)
 	if collector.numWorkers != 5 {
 		t.Errorf("numWorkers = %d, want %d", collector.numWorkers, 5)
 	}
@@ -19,7 +19,7 @@ func TestNewCollector(t *testing.T) {
 
 func TestNewCollector_DefaultMaxProxyFails(t *testing.T) {
 	// Passing 0 should fall back to the default.
-	collector := NewCollector(nil, "https://example.com", 5, nil, false, 0)
+	collector := NewCollector(nil, "https://example.com", 5, nil, false, 0, 0, 0)
 	if collector.maxProxyFails == 0 {
 		t.Error("maxProxyFails = 0, expected default fallback")
 	}

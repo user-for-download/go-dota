@@ -39,7 +39,12 @@ func main() {
 		log.Error("redis connect", "error", err)
 		os.Exit(1)
 	}
-	defer rdb.Close()
+	defer func(rdb *redisstore.Client) {
+		err := rdb.Close()
+		if err != nil {
+			log.Error("redis store", "error", err)
+		}
+	}(rdb)
 
 	db, err := postgresstore.NewClient(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -49,7 +54,19 @@ func main() {
 	defer db.Close()
 
 	repo := postgresstore.NewRepository(db)
-	enricher := worker.NewEnricher(rdb, repo, log, worker.DefaultEnricherConfig())
+
+	// Build enricher config - allow config env vars to override defaults
+	enricherCfg := worker.DefaultEnricherConfig()
+	if cfg.EnricherItemsURL != "" {
+		enricherCfg.ItemsURL = cfg.EnricherItemsURL
+	}
+	if cfg.EnricherGameModesURL != "" {
+		enricherCfg.GameModesURL = cfg.EnricherGameModesURL
+	}
+	if cfg.EnricherLobbyTypesURL != "" {
+		enricherCfg.LobbyTypesURL = cfg.EnricherLobbyTypesURL
+	}
+	enricher := worker.NewEnricher(rdb, repo, log, enricherCfg)
 
 	for {
 		if err := enricher.Run(ctx); err != nil {

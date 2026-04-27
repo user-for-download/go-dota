@@ -10,14 +10,20 @@ import (
 
 // IngestMatch inserts a match with full FK compliance.
 // All nested data (players, draft, events, timeseries) is upserted.
+// Uses pg_try_advisory_xact_lock to avoid blocking when another transaction
+// is already processing the same match.
 func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 	if err := m.Validate(); err != nil {
 		return fmt.Errorf("validate match: %w", err)
 	}
 
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, m.MatchID); err != nil {
+		var got bool
+		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, m.MatchID).Scan(&got); err != nil {
 			return fmt.Errorf("advisory lock: %w", err)
+		}
+		if !got {
+			return nil // another tx is handling this match
 		}
 
 		// FK stubs - teams, leagues, and heroes must exist before player_matches

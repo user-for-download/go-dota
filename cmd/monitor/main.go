@@ -114,18 +114,18 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type metricsOutput struct {
-	RedisFetchQueue            int64   `json:"redis_fetch_queue"`
-	RedisParseQueue           int64   `json:"redis_parse_queue"`
-	RedisFailedQueue          int64   `json:"redis_failed_queue"`
-	RedisPermanentFailedQueue int64   `json:"redis_permanent_failed_queue"`
-	MatchesCount              int64   `json:"matches_count"`
-	PlayerMatchesCount        int64   `json:"player_matches_count"`
-	ParsedMatchesCount        int64   `json:"parsed_matches_count"`
-	FetcherLastRunTS          int64   `json:"fetcher_last_run_ts,omitempty"`
-	FetcherLastRunDiscovered int     `json:"fetcher_last_run_discovered,omitempty"`
-	FetcherLastRunNewInDB    int     `json:"fetcher_last_run_new_in_db,omitempty"`
-	FetcherLastRunPushed    int     `json:"fetcher_last_run_pushed,omitempty"`
-	Errors                   []string `json:"errors,omitempty"`
+	RedisFetchQueue           int64    `json:"redis_fetch_queue"`
+	RedisParseQueue           int64    `json:"redis_parse_queue"`
+	RedisFailedQueue          int64    `json:"redis_failed_queue"`
+	RedisPermanentFailedQueue int64    `json:"redis_permanent_failed_queue"`
+	MatchesCount              int64    `json:"matches_count"`
+	PlayerMatchesCount        int64    `json:"player_matches_count"`
+	ParsedMatchesCount        int64    `json:"parsed_matches_count"`
+	FetcherLastRunTS          int64    `json:"fetcher_last_run_ts,omitempty"`
+	FetcherLastRunDiscovered  int      `json:"fetcher_last_run_discovered,omitempty"`
+	FetcherLastRunNewInDB     int      `json:"fetcher_last_run_new_in_db,omitempty"`
+	FetcherLastRunPushed      int      `json:"fetcher_last_run_pushed,omitempty"`
+	Errors                    []string `json:"errors,omitempty"`
 }
 
 func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
@@ -135,12 +135,24 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 	out := metricsOutput{}
 	var errs []string
 
-	if data, err := h.rdb.Get(ctx, "fetcher:last_run").Bytes(); err == nil {
+	pipe := h.rdb.Pipeline()
+	lastRun := pipe.Get(ctx, "fetcher:last_run")
+	fetchQ := pipe.LLen(ctx, "fetch_queue")
+	parseQ := pipe.LLen(ctx, "parse_queue")
+	failedQ := pipe.LLen(ctx, "failed_queue")
+	permFailedQ := pipe.LLen(ctx, "permanent_failed_queue")
+
+	_, err := pipe.Exec(ctx)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		h.log.Warn("metrics: redis pipeline error", "error", err)
+	}
+
+	if data, err := lastRun.Bytes(); err == nil {
 		var stats struct {
 			TS         int64 `json:"ts"`
 			Discovered int   `json:"discovered"`
-			NewInDB   int   `json:"new_in_db"`
-			Pushed    int   `json:"pushed"`
+			NewInDB    int   `json:"new_in_db"`
+			Pushed     int   `json:"pushed"`
 		}
 		if json.Unmarshal(data, &stats) == nil {
 			out.FetcherLastRunTS = stats.TS
@@ -150,31 +162,16 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-if val, err := h.rdb.LLen(ctx, "fetch_queue").Result(); err != nil {
-		h.log.Warn("metrics: fetch_queue len failed", "error", err)
-		errs = append(errs, "redis: fetch_queue")
-	} else {
+	if val, err := fetchQ.Result(); err == nil {
 		out.RedisFetchQueue = val
 	}
-
-	if val, err := h.rdb.LLen(ctx, "parse_queue").Result(); err != nil {
-		h.log.Warn("metrics: parse_queue len failed", "error", err)
-		errs = append(errs, "redis: parse_queue")
-	} else {
+	if val, err := parseQ.Result(); err == nil {
 		out.RedisParseQueue = val
 	}
-
-	if val, err := h.rdb.LLen(ctx, "failed_queue").Result(); err != nil {
-		h.log.Warn("metrics: failed_queue len failed", "error", err)
-		errs = append(errs, "redis: failed_queue")
-	} else {
+	if val, err := failedQ.Result(); err == nil {
 		out.RedisFailedQueue = val
 	}
-
-	if val, err := h.rdb.LLen(ctx, "permanent_failed_queue").Result(); err != nil {
-		h.log.Warn("metrics: permanent_failed_queue len failed", "error", err)
-		errs = append(errs, "redis: permanent_failed_queue")
-	} else {
+	if val, err := permFailedQ.Result(); err == nil {
 		out.RedisPermanentFailedQueue = val
 	}
 

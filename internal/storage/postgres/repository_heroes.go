@@ -10,8 +10,9 @@ import (
 
 // upsertHeroStubTx creates a stub hero row if it doesn't exist.
 // Used to satisfy FK constraints before player_matches ingestion.
+// Allows heroID = 0 for picks/bans compatibility.
 func upsertHeroStubTx(ctx context.Context, tx pgx.Tx, heroID int16) error {
-	if heroID <= 0 {
+	if heroID < 0 {
 		return nil
 	}
 	const q = `

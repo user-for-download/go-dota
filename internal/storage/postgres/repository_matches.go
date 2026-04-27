@@ -4,11 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/user-for-download/go-dota/internal/models"
 )
+
+// intBoolPtr converts models.IntBool to *bool for pgx compatibility.
+func intBoolPtr(ib *models.IntBool) *bool {
+	if ib == nil {
+		return nil
+	}
+	b := bool(*ib)
+	return &b
+}
 
 // upsertMatchTx inserts or updates the core matches row. start_time is required
 // in the INSERT so PostgreSQL can route to the correct partition.
@@ -106,30 +116,84 @@ func upsertMatchCosmeticsTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 	return nil
 }
 
-// replacePlayerMatchesTx inserts all player rows for a match.
-// Uses ON CONFLICT DO UPDATE for idempotency.
+// replacePlayerMatchesTx inserts all player rows for a match using a single
+// multi-VALUES INSERT for efficiency. Uses ON CONFLICT DO UPDATE for idempotency.
+// This version writes ALL columns to populate the hot path for MVs.
 func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
 	if len(m.Players) == 0 {
 		return nil
 	}
 
-	for _, p := range m.Players {
+	// Columns to write - note: not all MatchPlayer fields map to DB columns
+	// See schema in 001_init.sql player_matches table
+	constCols := []string{
+		"match_id", "player_slot", "start_time", "account_id",
+		"hero_id", "hero_variant", "is_radiant", "win", "duration",
+		"patch_id", "lobby_type", "game_mode",
+		"kills", "deaths", "assists", "level",
+		"net_worth", "gold", "gold_spent", "gold_per_min", "xp_per_min",
+		"last_hits", "denies", "hero_damage", "tower_damage", "hero_healing",
+		"item_0", "item_1", "item_2", "item_3", "item_4", "item_5",
+		"item_neutral", "backpack_0", "backpack_1", "backpack_2", "backpack_3",
+		"lane", "lane_role", "is_roaming", "party_id", "party_size",
+		"stuns", "obs_placed", "sen_placed", "creeps_stacked", "camps_stacked",
+		"rune_pickups", "firstblood_claimed", "teamfight_participation",
+		"towers_killed", "roshans_killed", "observers_placed", "leaver_status",
+	}
+
+	placeholders := make([]string, len(m.Players))
+	args := make([]interface{}, 0, len(m.Players)*len(constCols))
+
+	for i, p := range m.Players {
 		isRadiant := p.PlayerSlot < 128
 		win := m.RadiantWin == isRadiant
+		base := i * len(constCols)
 
-		const q = `
-			INSERT INTO player_matches (match_id, player_slot, start_time, hero_id, is_radiant, win, duration)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (match_id, player_slot, start_time) DO UPDATE SET
-				hero_id = EXCLUDED.hero_id,
-				win = EXCLUDED.win,
-				duration = EXCLUDED.duration`
-		_, err := tx.Exec(ctx, q,
-			m.MatchID, p.PlayerSlot, m.StartTime, p.HeroID, isRadiant, win, m.Duration,
-		)
-		if err != nil {
-			return fmt.Errorf("player_matches: %w", err)
+		// Build placeholders for this row
+		row := make([]string, len(constCols))
+		for j := range constCols {
+			row[j] = fmt.Sprintf("$%d", base+j+1)
 		}
+		placeholders[i] = fmt.Sprintf("(%s)", strings.Join(row, ","))
+
+		// Build args for this row - order must match constCols
+		args = append(args,
+			m.MatchID, p.PlayerSlot, m.StartTime, p.AccountID,
+			p.HeroID, p.HeroVariant, isRadiant, win, m.Duration,
+			m.PatchID, m.LobbyType, m.GameMode,
+			p.Kills, p.Deaths, p.Assists, p.Level,
+			p.NetWorth, p.Gold, p.GoldSpent, p.GoldPerMin, p.XPPerMin,
+			p.LastHits, p.Denies, p.HeroDamage, p.TowerDamage, p.HeroHealing,
+			p.Item0, p.Item1, p.Item2, p.Item3, p.Item4, p.Item5,
+			p.ItemNeutral, p.Backpack0, p.Backpack1, p.Backpack2, p.Backpack3,
+			p.Lane, p.LaneRole, p.IsRoaming, p.PartyID, p.PartySize,
+			p.Stuns, p.ObsPlaced, p.SenPlaced, p.CreepsStacked, p.CampsStacked,
+			p.RunePickups, intBoolPtr(p.FirstbloodClaimed), p.TeamfightParticipation,
+			p.TowersKilled, p.RoshansKilled, p.ObserversPlaced, p.LeaverStatus,
+		)
+	}
+
+	valuesClause := strings.Join(placeholders, ", ")
+	cols := strings.Join(constCols, ", ")
+
+	// Build the SET clause for ON CONFLICT - exclude PK columns from update
+	setClauses := make([]string, 0, len(constCols)-3) // exclude match_id, player_slot, start_time
+	for _, c := range constCols[3:] { // skip PK columns
+		setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", c, c))
+	}
+	setClause := strings.Join(setClauses, ", ")
+
+	q := fmt.Sprintf(`
+		INSERT INTO player_matches (%s)
+		VALUES %s
+		ON CONFLICT (match_id, player_slot, start_time) DO UPDATE SET
+			%s`,
+		cols, valuesClause, setClause,
+	)
+
+	_, err := tx.Exec(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("player_matches: %w", err)
 	}
 	return nil
 }

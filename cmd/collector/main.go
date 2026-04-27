@@ -48,6 +48,8 @@ func main() {
 		log,
 		cfg.SkipTLSVerify,
 		cfg.MaxProxyFails,
+		cfg.CollectorMaxRetries,
+		cfg.CollectorMaxRateLimitRetries,
 	)
 
 	collector.Run(ctx)

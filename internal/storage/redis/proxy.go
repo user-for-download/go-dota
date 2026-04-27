@@ -23,7 +23,7 @@ var recordSuccessScript = goredis.NewScript(`
 	local current = redis.call("ZSCORE", rankingKey, proxy)
 	local score = 1
 	if current then
-		score = math.max(1, tonumber(current) + 1)
+		score = math.min(10000, math.max(1, tonumber(current) + 1))
 	end
 	redis.call("ZADD", rankingKey, score, proxy)
 	redis.call("DEL", failKey)

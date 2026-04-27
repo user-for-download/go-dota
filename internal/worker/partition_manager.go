@@ -95,12 +95,12 @@ func (pm *PartitionManager) ensureForwardPartitions(ctx context.Context) (int, e
 
 	created := 0
 	for i := 0; i < pm.maxAheadMonths; i++ {
-		target := time.Date(now.Year(), now.Month()+time.Month(i), 1, 0, 0, 0, 0, time.UTC)
-		name := postgres.MonthPartitionName(target)
+		target := time.Date(now.Year(), now.Month()+time.Month(i*3), 1, 0, 0, 0, 0, time.UTC)
+		name := postgres.QuarterPartitionName(target)
 		if _, ok := have[name]; ok {
 			continue
 		}
-		from, to := postgres.MonthBounds(target)
+		from, to := postgres.QuarterBounds(target)
 		if err := pm.repo.CreateMatchPartition(ctx, name, from, to); err != nil {
 			return created, fmt.Errorf("create %s: %w", name, err)
 		}

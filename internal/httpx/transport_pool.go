@@ -13,15 +13,19 @@ type Options struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
-	DialTimeout         time.Duration
+	DialTimeout        time.Duration
+	MaxPoolSize        int // 0 = unlimited
 }
+
+const defaultMaxPoolSize = 500
 
 func DefaultOptions() Options {
 	return Options{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
-		DialTimeout:         10 * time.Second,
+		DialTimeout:        10 * time.Second,
+		MaxPoolSize:        defaultMaxPoolSize,
 	}
 }
 
@@ -29,25 +33,21 @@ type TransportPool struct {
 	opts       Options
 	mu         sync.RWMutex
 	transports map[string]*http.Transport
-	// NOTE: No eviction — transport map grows as proxies are added via RemoveProxy.
-	// Acceptable if proxy set is stable; unbounded growth if proxies churn frequently.
+	lastUsed  map[string]time.Time
 }
 
 func NewTransportPool(opts Options) *TransportPool {
+	if opts.MaxPoolSize == 0 {
+		opts.MaxPoolSize = defaultMaxPoolSize
+	}
 	return &TransportPool{
 		opts:       opts,
 		transports: make(map[string]*http.Transport),
+		lastUsed:  make(map[string]time.Time),
 	}
 }
 
 func (p *TransportPool) GetOrCreate(proxyURL string) (*http.Transport, error) {
-	p.mu.RLock()
-	if t, ok := p.transports[proxyURL]; ok {
-		p.mu.RUnlock()
-		return t, nil
-	}
-	p.mu.RUnlock()
-
 	parsed, err := url.Parse(proxyURL)
 	if err != nil {
 		return nil, err
@@ -55,19 +55,44 @@ func (p *TransportPool) GetOrCreate(proxyURL string) (*http.Transport, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if t, ok := p.transports[proxyURL]; ok {
+		p.lastUsed[proxyURL] = time.Now()
 		return t, nil
 	}
 
+	if p.opts.MaxPoolSize > 0 && len(p.transports) >= p.opts.MaxPoolSize {
+		p.evictOldestLocked()
+	}
+
 	t := &http.Transport{
-		Proxy:               http.ProxyURL(parsed),
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: p.opts.SkipTLSVerify},
-		MaxIdleConns:        p.opts.MaxIdleConns,
+		Proxy:              http.ProxyURL(parsed),
+		TLSClientConfig:    &tls.Config{InsecureSkipVerify: p.opts.SkipTLSVerify},
+		MaxIdleConns:       p.opts.MaxIdleConns,
 		MaxIdleConnsPerHost: p.opts.MaxIdleConnsPerHost,
-		IdleConnTimeout:     p.opts.IdleConnTimeout,
+		IdleConnTimeout:    p.opts.IdleConnTimeout,
 	}
 	p.transports[proxyURL] = t
+	p.lastUsed[proxyURL] = time.Now()
 	return t, nil
+}
+
+func (p *TransportPool) evictOldestLocked() {
+	var oldest string
+	var oldestTime = time.Now()
+	for url, t := range p.lastUsed {
+		if t.Before(oldestTime) {
+			oldestTime = t
+			oldest = url
+		}
+	}
+	if oldest != "" {
+		if t, ok := p.transports[oldest]; ok {
+			t.CloseIdleConnections()
+		}
+		delete(p.transports, oldest)
+		delete(p.lastUsed, oldest)
+	}
 }
 
 func (p *TransportPool) Remove(proxyURL string) {

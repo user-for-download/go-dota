@@ -22,6 +22,18 @@ type Config struct {
 	MaxProxyReqPerMin int   `env:"MAX_PROXY_REQ_MIN" env-default:"60"`
 	MaxProxyReqPerDay int   `env:"MAX_PROXY_REQ_DAY" env-default:"3000"`
 	MaxQueueSize    int64  `env:"MAX_QUEUE_SIZE" env-default:"10000"`
+
+	// Collector retry budgets
+	CollectorMaxRetries          int `env:"COLLECTOR_MAX_RETRIES" env-default:"5"`
+	CollectorMaxRateLimitRetries int `env:"COLLECTOR_MAX_RATE_LIMIT_RETRIES" env-default:"20"`
+
+	// Transport pool
+	MaxPoolSize int `env:"MAX_POOL_SIZE" env-default:"500"`
+
+	// Enricher endpoints
+	EnricherItemsURL    string `env:"ENRICHER_ITEMS_URL" env-default:"https://api.opendota.com/api/constants/items"`
+	EnricherGameModesURL  string `env:"ENRICHER_GAME_MODES_URL" env-default:"https://api.opendota.com/api/constants/game_mode"`
+	EnricherLobbyTypesURL string `env:"ENRICHER_LOBBY_TYPES_URL" env-default:"https://api.opendota.com/api/constants/lobby_type"`
 }
 
 func Load() (*Config, error) {

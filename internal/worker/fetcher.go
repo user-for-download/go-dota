@@ -93,6 +93,7 @@ func (f *Fetcher) Run(ctx context.Context) error {
 	f.logger.Info("queue capacity check passed, starting push")
 
 	pushed := 0
+	pushedIDs := make([]int64, 0, len(unknownIDs))
 	for _, id := range unknownIDs {
 		queueLen, err := f.redisClient.GetQueueLen(ctx)
 		if err != nil {
@@ -121,12 +122,20 @@ func (f *Fetcher) Run(ctx context.Context) error {
 			f.logger.Error("push task failed", "match_id", id, "error", err)
 			continue
 		}
-
-		if err := f.redisClient.MarkFetchIDSeen(ctx, idStr); err != nil {
-			f.logger.Warn("MarkFetchIDSeen failed, ID may be re-pushed",
-				"id", idStr, "error", err)
-		}
+		pushedIDs = append(pushedIDs, id)
 		pushed++
+	}
+
+	// Batch mark all pushed IDs as seen (more efficient than per-ID)
+	if len(pushedIDs) > 0 {
+		idStrs := make([]string, len(pushedIDs))
+		for i, id := range pushedIDs {
+			idStrs[i] = strconv.FormatInt(id, 10)
+		}
+		if err := f.redisClient.MarkFetchIDSeenBatch(ctx, idStrs); err != nil {
+			f.logger.Warn("MarkFetchIDSeenBatch failed, IDs may be re-pushed",
+				"error", err)
+		}
 	}
 
 	f.logger.Info("tasks pushed to queue", "count", pushed)
@@ -240,7 +249,6 @@ func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64,
 
 		if len(explorer.Rows) == 0 {
 			f.httpClient.RemoveProxy(proxy)
-			_ = f.redisClient.RecordProxyFailure(ctx, proxy, f.maxProxyFails)
 			lastErr = fmt.Errorf("empty rows from explorer (proxy=%s)", proxy)
 			f.logger.Warn("explorer returned empty rows", "proxy", proxy)
 			continue

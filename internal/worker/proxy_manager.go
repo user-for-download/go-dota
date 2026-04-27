@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +18,10 @@ import (
 
 	"github.com/user-for-download/go-dota/internal/httpx"
 	"github.com/user-for-download/go-dota/internal/storage/redis"
+)
+
+const (
+	maxProviderResponseSize = 10 << 20 // 10MB limit for provider responses
 )
 
 // ---------------------------------------------------------------------
@@ -322,7 +327,8 @@ func (pm *ProxyManager) fetchFromProviderWithTransport(ctx context.Context, tran
 		return nil, fmt.Errorf("provider status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	limitedReader := io.LimitReader(resp.Body, maxProviderResponseSize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
@@ -333,7 +339,9 @@ func (pm *ProxyManager) fetchFromProviderWithTransport(ctx context.Context, tran
 		out := make([]string, 0, len(apiResp.Proxies))
 		for _, p := range apiResp.Proxies {
 			if p.Alive && p.Proxy != "" {
-				out = append(out, p.Proxy)
+				if isValidProxyScheme(p.Proxy) {
+					out = append(out, p.Proxy)
+				}
 			}
 		}
 		if len(out) > 0 {
@@ -346,6 +354,15 @@ func (pm *ProxyManager) fetchFromProviderWithTransport(ctx context.Context, tran
 		return list, nil
 	}
 	return nil, fmt.Errorf("provider response contained no usable proxies")
+}
+
+func isValidProxyScheme(proxyURL string) bool {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https" || scheme == "socks5" || scheme == "socks4"
 }
 
 func (pm *ProxyManager) parseTextProxies(body []byte) []string {
@@ -361,7 +378,9 @@ func (pm *ProxyManager) parseTextProxies(body []byte) []string {
 			!strings.HasPrefix(line, "socks4://") {
 			line = "http://" + line
 		}
-		proxies = append(proxies, line)
+		if isValidProxyScheme(line) {
+			proxies = append(proxies, line)
+		}
 	}
 	return proxies
 }
@@ -414,7 +433,9 @@ func (pm *ProxyManager) parseLocalProxies(data []byte) ([]string, error) {
 		if !strings.HasPrefix(proxyURL, "http") && !strings.HasPrefix(proxyURL, "socks") {
 			proxyURL = "http://" + proxyURL
 		}
-		proxies = append(proxies, proxyURL)
+		if isValidProxyScheme(proxyURL) {
+			proxies = append(proxies, proxyURL)
+		}
 	}
 	return proxies, nil
 }

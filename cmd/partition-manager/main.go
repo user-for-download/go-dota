@@ -17,7 +17,7 @@ import (
 func main() {
 	oneShot := flag.Bool("once", false, "run a single maintenance pass and exit")
 	interval := flag.Duration("interval", 24*time.Hour, "maintenance interval")
-	ahead := flag.Int("ahead", 3, "forward months of partitions to maintain")
+	ahead := flag.Int("ahead", 3, "forward quarters of partitions to maintain")
 	retention := flag.Int("retention-months", 0, "months of data to retain; 0 = disabled")
 	detachOnly := flag.Bool("detach-only", true, "detach instead of dropping old partitions")
 	flag.Parse()
