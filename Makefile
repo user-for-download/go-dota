@@ -26,7 +26,11 @@ rebuild: ## Force-rebuild all images
 	docker buildx bake -f $(BAKE_FILE) --no-cache
 
 up-init:
-	docker compose -f $(COMPOSE_FILE) --profile init --profile db --profile proxy up
+	docker compose -f $(COMPOSE_FILE) --profile init --profile db up
+
+down-init:
+	docker compose -f $(COMPOSE_FILE) --profile init --profile db down -v
+
 up: ## Start the full pipeline (foreground)
 	docker compose -f $(COMPOSE_FILE)  --profile all up
 
@@ -39,10 +43,13 @@ down: ## Stop and remove containers
 downv: ## Stop and remove containers and volumes
 	docker compose -f $(COMPOSE_FILE)  --profile all down -v
 
+fetcher:
+	docker compose -f deployments/docker-compose.yml run --rm fetcher --key=default --profile db
+
 restart: down upd ## Restart the pipeline (detached)
 
 logs: ## Follow logs
-	docker compose -f $(COMPOSE_FILE)  logs -f
+	docker compose -f $(COMPOSE_FILE) --profile all logs -f
 
 ps: ## View running service status
 	docker compose -f $(COMPOSE_FILE)  ps
@@ -61,3 +68,19 @@ shell-db: ## Open psql shell
 
 shell-redis: ## Open redis-cli shell
 	docker compose -f $(COMPOSE_FILE) -p  exec redis redis-cli
+
+.PHONY: armageddon
+armageddon:
+	@echo "--- Nuking all Docker resources ---"
+	# Stop and remove all containers
+	@docker ps -aq | xargs -r docker stop
+	@docker ps -aq | xargs -r docker rm -f
+	# Remove all networks (except defaults)
+	@docker network prune -f
+	# Remove all volumes
+	@docker volume prune -f
+	# Remove dangling images
+	@docker image prune -f
+	# Force remove all images
+	@docker images -qa | xargs -r docker rmi -f
+	@echo "--- Armageddon complete ---"
