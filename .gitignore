@@ -1,11 +1,5 @@
 # Binaries
 bin/
-cmd/collector/collector
-cmd/fetcher/fetcher
-cmd/monitor/monitor
-cmd/parser/parser
-cmd/proxy-manager/proxy-manager
-
 # Local development
 .env
 *.log
@@ -20,6 +14,7 @@ vendor/
 *.test
 *.exe
 *.prof
+*.json
 
 # Docker
 .docker/
