@@ -1,10 +1,11 @@
 # AGENTS.md – Guidelines for AI Coding Agents
 
 ## Repository Structure
-- `cmd/` – one main per service (`cmd/collector/main.go`, `cmd/fetcher/main.go`, …)
+- `cmd/` – one main per service (`cmd/collector/main.go`, `cmd/fetcher/main.go`, `cmd/migrate/main.go`, …)
 - `internal/` – core logic, organised by domain:
   - `config` – environment‑based configuration (cleanenv)
   - `logger` – structured JSON logger (slog)
+  - `readiness` – dependency probes (Postgres, Redis, ProxyPool, SchemaApplied)
   - `httpx` – proxy‑aware HTTP client with connection pooling
   - `models` – typed DTOs matching the OpenDota API (Match, Player, etc.)
   - `storage`
@@ -26,12 +27,13 @@ To run locally without Docker, start Redis + PostgreSQL, then launch each servic
 - **Logging**: Use `slog.Default()`; pass a logger instance from `main()`. Log keys are lowercase snake_case (e.g. `worker_id`).
 - **Error handling**: Return wrapped errors with context (`fmt.Errorf("…: %w", err)`). No panics in goroutines – always handle or log.
 - **Concurrency**: Long‑running workers use `sync.WaitGroup`, signal context, and select loops. Use `semaphore.Weighted` for bounded parallelism.
-- **Database**: All PostgreSQL writes go through `Repository` methods, which use `pgxpool.Pool`. Migrations are embedded and idempotent (advisory lock). Use `ON CONFLICT` for upserts.
+- **Database**: All PostgreSQL writes go through `Repository` methods, which use `pgxpool.Pool`. Use `ON CONFLICT` for upserts.
+- **Migrations**: Handled by dedicated `migrate` service (one-shot, not run on every service startup). Use session-level `SET lock_timeout = '60s'` (not `SET LOCAL`, as there's no transaction). Reset with `SET lock_timeout = DEFAULT` before returning connection to pool.
 - **Redis scripts**: Complex atomic operations (proxy selection, rate limiting, requeue) are implemented as Redis Lua scripts stored in the `redis` package and executed via `goredis.Script`.
 - **Models**: The `Match` struct uses pointer fields for nullable API values, `json.RawMessage` for cold JSONB, and typed enums (e.g., `PlayerSlot`). Validate before ingestion.
 
 ## Working with this Codebase
-1. **Adding a new service**: Create a `cmd/<name>/main.go` that loads config, clients, and runs a worker loop. Implement the worker logic in `internal/worker/<name>.go`. Add a Dockerfile and service entry in `docker‑compose.yml`.
+1. **Adding a new service**: Create a `cmd/<name>/main.go` that loads config, clients, runs `readiness.WaitAll()` for dependencies, and starts a worker loop. Implement the worker logic in `internal/worker/<name>.go`. Add a Dockerfile and service entry in `docker‑compose.yml`.
 2. **Extending the data model**:
    - If the OpenDota API changes, update `internal/models/match.go` (new fields must be nullable/pointer unless always present).
    - Update the matching upsert queries in `internal/storage/postgres/repository_*.go`.
@@ -42,7 +44,8 @@ To run locally without Docker, start Redis + PostgreSQL, then launch each servic
 5. **Configuration**: All tunables come from environment variables. Never hard‑code hostnames, ports, or credentials. The `config.Config` struct is the single source of truth.
 
 ## Important Invariants
-- **Match ingestion is idempotent** – re‑ingesting the same match must not create duplicates. This relies on `ON CONFLICT` and advisory locks.
+- **Match ingestion is idempotent** – re‑ingesting the same match must not create duplicates. This relies on `ON CONFLICT` and advisory locks. Transient lock conflicts return `ErrMatchLocked` and are retried via DLQ.
+- **Collector retry budget** – tracks `network_attempts` and `rate_limit_retries` separately. Each has independent budget (default 5min timeout).
 - **Proxy pool is reset atomically** – `AddProxies` deletes the old pool and bulk‑inserts new proxies in one pipeline.
 - **Fetch queue capacity check is non‑atomic** – a TOCTOU race may cause slight overshoot; this is acceptable but do not rely on exact cap.
 - **Parser DLQ recovery** – tasks in `failed_queue` have their retry count stored in Redis. Never manually delete retry counts unless you also delete the task.
