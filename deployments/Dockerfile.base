@@ -9,3 +9,6 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
 
 # Source layer
 COPY . .
+
+# Optional: exclude build artifacts from base image to keep it small
+# (bin/ contains compiled tools like enricher; they're copied per-service)

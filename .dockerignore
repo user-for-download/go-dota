@@ -8,3 +8,4 @@ enricher
 .vscode
 .idea
 .env
+bin/

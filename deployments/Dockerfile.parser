@@ -9,8 +9,5 @@ RUN apk --no-cache add ca-certificates
 RUN adduser -D -u 10001 app
 WORKDIR /app
 COPY --from=builder /bin/parser /bin/parser
-# Force Docker to detect changes in migrations
-COPY internal/storage/postgres/migrations/ /app/internal/storage/postgres/migrations/
-RUN echo "Migrations: " && ls -1 /app/internal/storage/postgres/migrations/
 USER app
 ENTRYPOINT ["/bin/parser"]
