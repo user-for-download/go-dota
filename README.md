@@ -30,7 +30,6 @@ Key Patterns & Tech:
 ```bash
 # Run a service
 make rebuild
-make up-init
 make up
 make fetch
 ```

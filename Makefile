@@ -45,7 +45,7 @@ downv: ## Stop and remove containers and volumes
 
 fetch:
 	docker compose -f deployments/docker-compose.yml \
-	  --profile db --profile fetch \
+	  --profile all --profile fetch \
 	  run --rm fetcher --key=default
 
 restart: down upd ## Restart the pipeline (detached)

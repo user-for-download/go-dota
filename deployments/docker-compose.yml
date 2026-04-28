@@ -35,11 +35,10 @@ services:
       timeout: 5s
       retries: 5
 
-migrate:
+  migrate:
     profiles:
       - all
       - go
-      - init
     image: deployments-parser:latest
     restart: "no"
     entrypoint: ["/bin/parser", "--migrate-only"]
@@ -54,7 +53,6 @@ migrate:
     profiles:
       - all
       - go
-      - init
     restart: unless-stopped
     depends_on:
       redis:
@@ -111,9 +109,10 @@ migrate:
   fetcher:
     image: deployments-fetcher:latest
     profiles:
-      - fetch
+      - all
       - go
-    restart: "no"
+    restart: unless-stopped
+    command: ["--key=default", "--interval=24h"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -127,6 +126,8 @@ migrate:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
       SQL_DIR: /app/deployments/queries
+    volumes:
+      - ./queries:/app/deployments/queries:ro
 
   monitor:
     image: deployments-monitor:latest

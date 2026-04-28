@@ -9,6 +9,5 @@ RUN apk --no-cache add ca-certificates
 RUN adduser -D -u 10001 app
 WORKDIR /app
 COPY --from=builder /bin/fetcher /bin/fetcher
-COPY --from=builder /app/deployments/queries /app/deployments/queries
 USER app
 ENTRYPOINT ["/bin/fetcher"]

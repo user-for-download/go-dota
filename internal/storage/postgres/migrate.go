@@ -36,12 +36,15 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	}
 	defer conn.Release()
 
-	// Ensure we can lock. Use blocking lock - if another instance holds it, we wait.
-	// This is safer-by-default for startup; prevents concurrent migration attempts.
-	// The lock automatically releases when the connection is dropped.
-	if _, err := conn.Exec(ctx, "SET LOCAL lock_timeout = '60s'"); err != nil {
+	// Ensure we can lock. Set session-level lock timeout (not LOCAL, as we aren't in a tx)
+	// and reset it before the connection is returned to the pool.
+	if _, err := conn.Exec(ctx, "SET lock_timeout = '60s'"); err != nil {
 		return fmt.Errorf("set lock timeout: %w", err)
 	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SET lock_timeout = DEFAULT")
+	}()
+
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockID); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}

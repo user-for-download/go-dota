@@ -21,6 +21,8 @@ var allowedKeys = []string{"leagues", "players", "teams", "default"}
 
 func main() {
 	key := flag.String("key", "default", fmt.Sprintf("Fetch key: %v", allowedKeys))
+	oneShot := flag.Bool("once", false, "run a single fetch pass and exit")
+	interval := flag.Duration("interval", 24*time.Hour, "fetch interval (ignored with --once)")
 	flag.Parse()
 
 	validKeys := make(map[string]bool)
@@ -33,7 +35,7 @@ func main() {
 	}
 
 	log := logger.Init()
-	log.Info("starting fetcher", "key", *key)
+	log.Info("starting fetcher", "key", *key, "once", *oneShot, "interval", *interval)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -84,10 +86,22 @@ func main() {
 		cfg.MaxQueueSize, cfg.MaxProxyFails,
 	)
 
-	if err := fetcher.Run(ctx); err != nil {
-		log.Error("fetcher error", "error", err)
-		os.Exit(1)
-	}
+	for {
+		if err := fetcher.Run(ctx); err != nil {
+			log.Error("fetcher error", "error", err)
+		} else {
+			log.Info("fetcher pass completed successfully")
+		}
 
-	log.Info("fetcher completed successfully")
+		if *oneShot {
+			return
+		}
+
+		log.Info("fetcher sleeping until next interval", "interval", *interval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(*interval):
+		}
+	}
 }
