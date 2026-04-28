@@ -10,7 +10,7 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -30,7 +30,7 @@ services:
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d pipeline"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d pipeline" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,7 +41,7 @@ services:
       - go
     image: deployments-parser:latest
     restart: "no"
-    entrypoint: ["/bin/parser", "--migrate-only"]
+    entrypoint: [ "/bin/parser", "--migrate-only" ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,11 +66,31 @@ services:
       HEALTH_CHECK_URL: https://httpbin.org/ip
       PROXY_REFRESH_MIN: "15"
     healthcheck:
-      test: ["CMD-SHELL", "test \"$(redis-cli -h redis SCARD proxy_pool)\" -gt 0"]
+      test: [ "CMD-SHELL", "test \"$(redis-cli -h redis SCARD proxy_pool)\" -gt 0" ]
       interval: 5s
       timeout: 3s
       retries: 60
       start_period: 15s
+
+  enricher:
+    image: deployments-enricher:latest
+    profiles:
+      - all
+      - go
+    restart: unless-stopped
+    command: [ "/bin/enricher", "--interval=24h" ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      proxy-manager:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
   collector:
     image: deployments-collector:latest
@@ -112,7 +132,7 @@ services:
       - all
       - go
     restart: unless-stopped
-    command: ["--key=default", "--interval=24h"]
+    command: [ "--key=default", "--interval=24h" ]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -147,31 +167,11 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/health" ]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
-
-  enricher:
-    image: deployments-enricher:latest
-    profiles:
-      - all
-      - go
-    restart: unless-stopped
-    command: ["/bin/enricher", "--interval=24h"]
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      proxy-manager:
-        condition: service_healthy
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
   partition-manager:
     image: deployments-partition-manager:latest
@@ -179,7 +179,7 @@ services:
       - all
       - go
     restart: unless-stopped
-    command: ["/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h"]
+    command: [ "/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h" ]
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -2,6 +2,7 @@ package readiness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,6 +41,22 @@ func SchemaApplied(p *pgxpool.Pool, version string) Probe {
 		}
 		if !ok {
 			return fmt.Errorf("missing migration %s", version)
+		}
+		return nil
+	}
+}
+
+func EnricherBootstrapped(c *goredis.Client) Probe {
+	return func(ctx context.Context) error {
+		v, err := c.Get(ctx, "enricher:bootstrapped").Result()
+		if err != nil {
+			if errors.Is(err, goredis.Nil) {
+				return fmt.Errorf("enricher has not completed first pass")
+			}
+			return err
+		}
+		if v != "1" {
+			return fmt.Errorf("enricher bootstrap marker invalid: %q", v)
 		}
 		return nil
 	}

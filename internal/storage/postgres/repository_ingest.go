@@ -33,29 +33,20 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 			return ErrMatchLocked
 		}
 
-		// FK stubs - teams, leagues, and heroes must exist before player_matches
-		if err := upsertTeamStubTx(ctx, tx, m.RadiantTeamID); err != nil {
-			return fmt.Errorf("team stub (radiant): %w", err)
-		}
-		if err := upsertTeamStubTx(ctx, tx, m.DireTeamID); err != nil {
-			return fmt.Errorf("team stub (dire): %w", err)
-		}
-		if err := upsertLeagueStubTx(ctx, tx, m.LeagueID); err != nil {
-			return fmt.Errorf("league stub: %w", err)
-		}
+		// Team/league stubs removed - enricher bootstrap gate ensures these exist before parser runs.
+		// If a new team/league appears mid-cycle, FK fails → retry queue → succeeds after next enricher pass.
 
 		// Core match row
 		if err := upsertMatchTx(ctx, tx, m); err != nil {
 			return fmt.Errorf("matches: %w", err)
 		}
 
-		// Player stubs for tracking seen accounts and hero stubs before any player data
+		// Player stubs for tracking seen accounts (not for FK - no FK constraint on account_id)
 		if err := upsertPlayerStubsTx(ctx, tx, m); err != nil {
 			return fmt.Errorf("player stubs: %w", err)
 		}
-		if err := upsertHeroStubsTx(ctx, tx, m); err != nil {
-			return fmt.Errorf("hero stubs: %w", err)
-		}
+		// Hero stubs removed - enricher populates heroes before parser runs.
+		// If a new hero appears mid-cycle, FK fails → retry queue → succeeds after next enricher pass.
 
 		// Player data (hot)
 		if err := replacePlayerMatchesTx(ctx, tx, m); err != nil {

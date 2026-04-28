@@ -94,6 +94,16 @@ func (e *Enricher) Run(ctx context.Context) error {
 		}
 	}
 	if len(errs) > 0 {
+		e.log.Warn("enricher completed with errors, setting bootstrap marker anyway", "error_count", len(errs))
+	}
+	if e.redis != nil {
+		// 7-day TTL: if enricher is down for >7 days, downstream services will
+		// block instead of running on stale lookup data. Refreshed each pass.
+		if err := e.redis.Instance().Set(ctx, "enricher:bootstrapped", "1", 7*24*time.Hour).Err(); err != nil {
+			e.log.Warn("failed to set enricher bootstrap marker", "error", err)
+		}
+	}
+	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
 	return nil

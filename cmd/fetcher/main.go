@@ -76,6 +76,7 @@ func main() {
 		readiness.Check{Name: "postgres", Probe: readiness.Postgres(pgClient.Pool()), Timeout: 10 * time.Second},
 		readiness.Check{Name: "schema", Probe: readiness.SchemaApplied(pgClient.Pool(), "001_init.sql"), Timeout: 10 * time.Second},
 		readiness.Check{Name: "proxy_pool", Probe: readiness.ProxyPool(redisClient.Instance(), 5), Timeout: 10 * time.Minute},
+		readiness.Check{Name: "enricher_bootstrap", Probe: readiness.EnricherBootstrapped(redisClient.Instance()), Timeout: 15 * time.Minute},
 	); err != nil {
 		log.Error("not ready", "error", err)
 		os.Exit(1)

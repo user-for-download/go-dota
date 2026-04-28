@@ -2,4 +2,3 @@ SELECT ARRAY_AGG(match_id ORDER BY start_time DESC) AS match_ids
 FROM matches
 -- WHERE start_time >= (EXTRACT(EPOCH FROM TIMESTAMPTZ '2026-03-24T00:50:59.580Z'))::BIGINT
 WHERE start_time >= (EXTRACT(EPOCH FROM NOW() - INTERVAL '1 day'))::BIGINT;
-HAVING COUNT(match_id) > 0;

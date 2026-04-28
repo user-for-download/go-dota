@@ -10,9 +10,15 @@ import (
 
 // upsertTeamStubTx creates a stub team row if it doesn't exist.
 // Used to satisfy FK constraints before match ingestion.
+// Takes an advisory lock to prevent deadlocks between concurrent transactions
+// inserting the same team stub.
 func upsertTeamStubTx(ctx context.Context, tx pgx.Tx, teamID *int64) error {
 	if teamID == nil {
 		return nil
+	}
+	// Namespace 2 for team locks (1 is used for migrations).
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(2, $1)`, *teamID); err != nil {
+		return fmt.Errorf("advisory lock team %d: %w", *teamID, err)
 	}
 	const q = `
 		INSERT INTO teams (team_id) VALUES ($1)

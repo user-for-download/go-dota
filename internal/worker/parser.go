@@ -200,9 +200,11 @@ func isPermanentIngestError(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "23503", "23514", "23502":
+		case "23514", "23502": // check_violation, not_null_violation
 			return true
 		}
+		// 23503 (FK violation) is transient: enricher will populate missing
+		// lookup rows on its next pass. Failed tasks go to retry queue.
 	}
 	return false
 }
