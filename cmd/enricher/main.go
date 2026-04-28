@@ -55,29 +55,17 @@ func main() {
 
 	repo := postgresstore.NewRepository(db)
 
-	// Build enricher config - allow config env vars to override defaults
-	enricherCfg := worker.DefaultEnricherConfig()
-	if cfg.EnricherHeroesURL != "" {
-		enricherCfg.HeroesURL = cfg.EnricherHeroesURL
+	// Direct mapping - cleaner than checking each string individually
+	enricherCfg := worker.EnricherConfig{
+		HeroesURL:     cfg.EnricherHeroesURL,
+		LeaguesURL:    cfg.EnricherLeaguesURL,
+		TeamsURL:      cfg.EnricherTeamsURL,
+		ItemsURL:      cfg.EnricherItemsURL,
+		GameModesURL:  cfg.EnricherGameModesURL,
+		LobbyTypesURL: cfg.EnricherLobbyTypesURL,
+		PatchesURL:    cfg.EnricherPatchesURL,
 	}
-	if cfg.EnricherLeaguesURL != "" {
-		enricherCfg.LeaguesURL = cfg.EnricherLeaguesURL
-	}
-	if cfg.EnricherTeamsURL != "" {
-		enricherCfg.TeamsURL = cfg.EnricherTeamsURL
-	}
-	if cfg.EnricherItemsURL != "" {
-		enricherCfg.ItemsURL = cfg.EnricherItemsURL
-	}
-	if cfg.EnricherGameModesURL != "" {
-		enricherCfg.GameModesURL = cfg.EnricherGameModesURL
-	}
-	if cfg.EnricherLobbyTypesURL != "" {
-		enricherCfg.LobbyTypesURL = cfg.EnricherLobbyTypesURL
-	}
-	if cfg.EnricherPatchesURL != "" {
-		enricherCfg.PatchesURL = cfg.EnricherPatchesURL
-	}
+
 	enricher := worker.NewEnricher(rdb, repo, log, enricherCfg)
 
 	for {

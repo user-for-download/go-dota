@@ -90,6 +90,7 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
+      ENRICHER_TEAMS_URL: ${ENRICHER_TEAMS_URL:-}
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
   collector:

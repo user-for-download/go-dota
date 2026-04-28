@@ -32,7 +32,7 @@ type Config struct {
 	// Enricher endpoints
 	EnricherHeroesURL     string `env:"ENRICHER_HEROES_URL" env-default:"https://api.opendota.com/api/heroes"`
 	EnricherLeaguesURL    string `env:"ENRICHER_LEAGUES_URL" env-default:"https://api.opendota.com/api/leagues"`
-	EnricherTeamsURL      string `env:"ENRICHER_TEAMS_URL" env-default:"https://api.opendota.com/api/explorer?sql=SELECT%20*%20FROM%20teams%20WHERE%20True"`
+	EnricherTeamsURL      string `env:"ENRICHER_TEAMS_URL" env-default:"https://api.opendota.com/api/teams"`
 	EnricherItemsURL      string `env:"ENRICHER_ITEMS_URL" env-default:"https://api.opendota.com/api/constants/items"`
 	EnricherGameModesURL  string `env:"ENRICHER_GAME_MODES_URL" env-default:"https://api.opendota.com/api/constants/game_mode"`
 	EnricherLobbyTypesURL string `env:"ENRICHER_LOBBY_TYPES_URL" env-default:"https://api.opendota.com/api/constants/lobby_type"`

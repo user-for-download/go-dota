@@ -20,8 +20,8 @@
 | **partition‑manager**| `cmd/partition‑manager`| Manages quarterly match partitions                      |
 
 ## Technology Stack
-- **Language:** Go 1.24+
-- **Message Queue / Cache:** Redis (go‑redis) – queues, proxy pool, raw data storage
+- **Language:** Go 1.25+
+- **Message Queue / Cache:** Redis (go‑redis) – queues, proxy pool, raw data storage, metrics
 - **Database:** PostgreSQL 16+ with **declarative partitioning** (RANGE on `start_time`, quarterly partitions)
 - **External API:** OpenDota (matches, explorer, constants)
 - **Deployment:** Docker Compose, separate images per service
@@ -32,6 +32,7 @@ All long-running services use `readiness.WaitAll()` to wait for dependencies bef
 - **PostgreSQL**: `service_healthy` condition
 - **Schema migrations**: waits for `001_init.sql` via `readiness.SchemaApplied()`
 - **Proxy pool**: waits for at least 5 proxies in Redis via `readiness.ProxyPool()`
+- **Enricher bootstrap**: waits for `enricher:bootstrapped` marker (critical enricher steps must succeed)
 
 This ensures services don't crash on startup if dependencies aren't ready—they loop until all probes pass.
 
@@ -42,25 +43,41 @@ Each step uses Redis lists (`fetch_queue`, `parse_queue`) with idempotent downst
 - Fetcher marks discovered IDs in a Redis seen‑set to avoid re‑push.
 - Collector atomically stores raw data and queues the task ID. Tracks `network_attempts` and `rate_limit_retries` separately for independent budget checking.
 - Parser uses `ON CONFLICT DO UPDATE` and advisory locks (`pg_try_advisory_xact_lock`) to make re‑ingestion safe.
-- **Dead Letter Queue**: Failed parse tasks go to `failed_queue` with retry metadata. Parser tracks per-task budget (5-minute total timeout). Metrics exposed: `parser_retry_count_avg`, `dlq_oldest_age_seconds`.
+- **Dead Letter Queue**: Failed parse tasks go to `failed_queue` with retry metadata. Parser tracks per-task budget (5-minute total timeout). Metrics exposed: `parser_retry_count_avg`, `dlq_oldest_age_seconds`, `ingest_failed_by_kind`.
 
-### 2. Proxy Rotation & Rate Limiting
+### 2. Enricher Bootstrap Gate
+The **enricher** populates lookup tables before parser runs:
+- **Critical steps** (patches, heroes, items, game_modes, lobby_types, leagues) must succeed before `enricher:bootstrapped` marker is set in Redis.
+- **Soft steps** (teams) don't block bootstrap - matches with new teams will FK fail and retry after next enricher pass.
+- Parser/Fetcher wait on the bootstrap marker via `readiness.EnricherBootstrapped()`.
+- This eliminates the need for stub inserts in the ingest path.
+
+### 3. FK Violation Handling
+FK violations (23503) are **transient**, not permanent:
+- Missing teams/heroes/leagues/patches cause retryable FK errors.
+- Failed tasks go to `failed_queue` and retry after next enricher pass.
+- Only check violations (23514) and not-null violations (23502) are permanent failures.
+
+### 4. Proxy Rotation & Rate Limiting
 The **collector** uses a weighted random proxy selection implemented as a Redis Lua script.  
 Per‑proxy failure counters temporarily penalise proxies; persistent failures evict them.  
-Per‑proxy rate limits (req/min, req/day) are enforced atomically in Redis.
+Per‑proxy rate limits (req/min, req/day) are enforced atomically in Redis.  
+Malformed proxy URLs are validated and removed from the pool.
 
-### 3. Partitioned Matches
+### 5. Partitioned Matches
 The `matches` table is partitioned by **quarter** (`start_time`) to keep scans efficient as data grows.  
 The primary key includes `start_time` to allow partition pruning.  
 Lookup tables (`heroes`, `items`, …) are not partitioned – they are small.
 
-### 4. Lookup Table Stubs
-To decouple match ingestion from enrichment, stub rows are inserted `ON CONFLICT DO NOTHING` before inserting match data.  
-This satisfies foreign‑key constraints without requiring the enricher to have run.
+### 6. Bulk Upsert Batching
+All bulk upserts are chunked to avoid PostgreSQL's 65,535 parameter limit:
+- Teams, heroes, leagues, items, game_modes, lobby_types, patches all use 1000-row batches.
+- Each batch stays well under the parameter limit.
 
-### 5. Validation & Poison Message Handling
+### 7. Validation & Poison Message Handling
 Match payloads are fully validated (positive IDs, player count, slot uniqueness).  
-Invalid messages are sent to `permanent_failed_queue` and never retried.
+Invalid messages are sent to `permanent_failed_queue` and never retried.  
+Metrics track failures by kind (`unmarshal`, `validation`, `fk_violation`, `match_locked`, etc.).
 
 ## Database Schema Overview
 - **`matches`** – core match metadata, partitioned by `start_time` (quarterly).

@@ -41,18 +41,6 @@ type EnricherConfig struct {
 	PatchesURL    string
 }
 
-func DefaultEnricherConfig() EnricherConfig {
-	return EnricherConfig{
-		HeroesURL:     "https://api.opendota.com/api/heroes",
-		LeaguesURL:    "https://api.opendota.com/api/leagues",
-		TeamsURL:      "https://api.opendota.com/api/teams",
-		ItemsURL:      "https://api.opendota.com/api/constants/items",
-		GameModesURL:  "https://api.opendota.com/api/constants/game_mode",
-		LobbyTypesURL: "https://api.opendota.com/api/constants/lobby_type",
-		PatchesURL:    "https://api.opendota.com/api/constants/patch",
-	}
-}
-
 func NewEnricher(
 	rdb *redis.Client,
 	repo *postgres.Repository,
@@ -300,14 +288,14 @@ func (e *Enricher) enrichLeagues(ctx context.Context) error {
 }
 
 type odTeam struct {
-	TeamID        int64   `json:"team_id"`
-	Name          string  `json:"name"`
-	Tag           string  `json:"tag"`
-	LogoURL       string  `json:"logo_url"`
-	Rating        float32 `json:"rating"`
-	Wins          int     `json:"wins"`
-	Losses        int     `json:"losses"`
-	LastMatchTime int64   `json:"last_match_time"`
+	TeamID        int64    `json:"team_id"`
+	Name          string   `json:"name"`
+	Tag           string   `json:"tag"`
+	LogoURL       string   `json:"logo_url"`
+	Rating        *float32 `json:"rating"`
+	Wins          *int     `json:"wins"`
+	Losses        *int     `json:"losses"`
+	LastMatchTime *int64   `json:"last_match_time"`
 }
 
 type explorerTeamResponse struct {
@@ -319,33 +307,44 @@ func (e *Enricher) enrichTeams(ctx context.Context) error {
 	if err := e.fetchJSON(ctx, e.teamsURL, &wrapper); err != nil {
 		return err
 	}
+
 	refs := make([]postgres.TeamRef, 0, len(wrapper.Rows))
+	withRating := 0
 	for _, t := range wrapper.Rows {
 		if t.TeamID == 0 {
 			continue
 		}
-		refs = append(refs, postgres.TeamRef{
-			TeamID:        t.TeamID,
-			Name:          t.Name,
-			Tag:           t.Tag,
-			LogoURL:       t.LogoURL,
-			Rating:        t.Rating,
-			Wins:          t.Wins,
-			Losses:        t.Losses,
-			LastMatchTime: t.LastMatchTime,
-		})
+		ref := postgres.TeamRef{
+			TeamID:  t.TeamID,
+			Name:    t.Name,
+			Tag:     t.Tag,
+			LogoURL: t.LogoURL,
+		}
+		if t.Rating != nil {
+			ref.Rating = *t.Rating
+		}
+		if t.Wins != nil {
+			ref.Wins = *t.Wins
+		}
+		if t.Losses != nil {
+			ref.Losses = *t.Losses
+		}
+		if t.LastMatchTime != nil {
+			ref.LastMatchTime = *t.LastMatchTime
+		}
+		if ref.Rating > 0 || ref.Wins > 0 || ref.Losses > 0 {
+			withRating++
+		}
+		refs = append(refs, ref)
 	}
+
 	if err := e.repo.UpsertTeamsBulk(ctx, refs); err != nil {
 		return err
 	}
-	withRating := 0
-	for _, t := range wrapper.Rows {
-		if t.Rating > 0 || t.Wins > 0 {
-			withRating++
-		}
-	}
-	e.log.Info("enriched teams", "count", len(wrapper.Rows), "with_rating", withRating)
-return nil
+	e.log.Info("enriched teams",
+		"count", len(refs),
+		"with_rating", withRating)
+	return nil
 }
 
 type odItem struct {
