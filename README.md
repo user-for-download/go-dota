@@ -4,16 +4,27 @@ Dota 2 match data ingestion pipeline. Fetches, collects, parses, and stores matc
 
 ## Services
 
-| Service | Description |
-|---------|-------------|
-| fetcher | Discovers new match IDs from OpenDota explorer API |
-| collector | Downloads match JSON via rotating proxy pool |
-| parser | Ingests matches into PostgreSQL (partitioned) |
-| enricher | Syncs lookup tables (heroes, items, patches, leagues, teams) |
-| proxy-manager | Manages Redis proxy pool |
-| partition-manager | Creates/drops quarterly partitions |
-| monitor | Health & metrics HTTP endpoint |
+    Fetcher (cmd/fetcher): Queries the OpenDota Explorer using SQL to discover new match IDs, deduplicates them against Postgres/Redis, and pushes them to the fetch_queue.
 
+    Collector (cmd/collector): Consumes the fetch_queue, rotates through a pool of proxies (with rate limiting and failure tracking via Lua scripts), fetches the raw JSON match data, and pushes it to the parse_queue.
+
+    Parser (cmd/parser): Consumes raw match JSON from the parse_queue, unmarshals and validates it, and safely ingests the massive relational payload into Postgres using transactions, advisory locks, and bulk copies.
+
+    Enricher (cmd/enricher): Periodically updates static/metadata (heroes, items, leagues, teams, patches) from the OpenDota API into the database.
+
+    Proxy Manager (cmd/proxy-manager): Maintains a healthy pool of HTTP/SOCKS proxies (from a provider and/or local file), testing them against a health-check endpoint and updating Redis.
+
+    Partition Manager (cmd/partition-manager): Automates PostgreSQL table partitioning for the matches table (creating future partitions and enforcing retention policies on old ones).
+
+    Monitor (cmd/monitor): Exposes an HTTP server for basic /health and /metrics (queue depths, match counts, retry averages).
+
+Key Patterns & Tech:
+
+    Postgres (pgx/v5): Heavy use of advanced Postgres features like table partitioning, JSONB for cold data, COPY protocol for fast bulk inserts, and advisory locks to prevent concurrent processing of the same match.
+
+    Redis (go-redis/v9): Advanced use of Lua scripts for atomic operations (rate limiting, weighted random proxy selection, DLQ retry logic).
+
+    Resilience: Comprehensive Dead Letter Queue (DLQ) mechanisms, proxy rotation, jittered backoffs, and strict connection pooling timeouts.
 ## Quick Start
 
 ```bash

@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates curl redis
 RUN adduser -D -u 10001 app
+WORKDIR /app
 COPY --from=builder /bin/proxy-manager /bin/proxy-manager
 USER app
 ENTRYPOINT ["/bin/proxy-manager"]

@@ -4,4 +4,4 @@ FROM notable_players np
          JOIN matches m ON pm.match_id = m.match_id
 WHERE np.is_pro = TRUE
   AND np.is_locked = TRUE
-  AND m.start_time >= EXTRACT(EPOCH FROM TIMESTAMPTZ '2026-01-01T00:50:59.580Z')::BIGINT;
+  AND m.start_time >= EXTRACT(EPOCH FROM TIMESTAMPTZ '2026-03-24T00:50:59.580Z')::BIGINT;

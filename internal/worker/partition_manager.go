@@ -13,14 +13,14 @@ type PartitionManager struct {
 	repo *postgres.Repository
 	log  *slog.Logger
 
-	maxAheadMonths  int
+	maxAheadQuarters int
 	retentionMonths int
 	detachOnly      bool
-	checkInterval   time.Duration
+	checkInterval    time.Duration
 }
 
 type PartitionManagerConfig struct {
-	MaxAheadMonths  int
+	MaxAheadQuarters int
 	RetentionMonths int
 	DetachOnly      bool
 	CheckInterval   time.Duration
@@ -31,13 +31,13 @@ func NewPartitionManager(
 	log *slog.Logger,
 	cfg PartitionManagerConfig,
 ) *PartitionManager {
-	if cfg.MaxAheadMonths <= 0 {
-		cfg.MaxAheadMonths = 3
+	if cfg.MaxAheadQuarters <= 0 {
+		cfg.MaxAheadQuarters = 3
 	}
 	return &PartitionManager{
 		repo:            repo,
 		log:             log,
-		maxAheadMonths:  cfg.MaxAheadMonths,
+		maxAheadQuarters: cfg.MaxAheadQuarters,
 		retentionMonths: cfg.RetentionMonths,
 		detachOnly:      cfg.DetachOnly,
 		checkInterval:   cfg.CheckInterval,
@@ -94,7 +94,7 @@ func (pm *PartitionManager) ensureForwardPartitions(ctx context.Context) (int, e
 	}
 
 	created := 0
-	for i := 0; i < pm.maxAheadMonths; i++ {
+	for i := 0; i < pm.maxAheadQuarters; i++ {
 		target := time.Date(now.Year(), now.Month()+time.Month(i*3), 1, 0, 0, 0, 0, time.UTC)
 		name := postgres.QuarterPartitionName(target)
 		if _, ok := have[name]; ok {

@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/user-for-download/go-dota/internal/config"
 	"github.com/user-for-download/go-dota/internal/logger"
+	"github.com/user-for-download/go-dota/internal/readiness"
 	redisstore "github.com/user-for-download/go-dota/internal/storage/redis"
 	"github.com/user-for-download/go-dota/internal/worker"
 )
@@ -40,6 +42,23 @@ func main() {
 			log.Error("redisClient", "error", err)
 		}
 	}(redisClient)
+
+	// Wait for dependencies to be ready
+	if err := readiness.WaitAll(ctx, log,
+		readiness.Check{
+			Name:    "redis",
+			Probe:   readiness.Redis(redisClient.Instance()),
+			Timeout: 10 * time.Second,
+		},
+		readiness.Check{
+			Name:    "proxy_pool",
+			Probe:   readiness.ProxyPool(redisClient.Instance(), 5),
+			Timeout: 10 * time.Minute,
+		},
+	); err != nil {
+		log.Error("not ready", "error", err)
+		os.Exit(1)
+	}
 
 	collector := worker.NewCollector(
 		redisClient,

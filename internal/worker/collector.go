@@ -138,16 +138,17 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 	defer cancel()
 
 	noProxyCounter := 0
-	rateLimitRetries := 0
-	totalAttempts := 0
-	const maxTotalAttempts = 30 // safety net: network + rate-limit attempts combined
+	networkAttempts := 0   // HTTP/network errors
+	rateLimitRetries := 0  // Rate limit hits
+	const maxTotalAttempts = 30 // safety net
 
 	for {
 		select {
 		case <-taskCtx.Done():
 			c.logger.Warn("task budget exhausted, dropping task",
 				"worker_id", workerID, "match_id", task.MatchID,
-				"reason", taskCtx.Err(), "total_attempts", totalAttempts)
+				"reason", taskCtx.Err(), "network_attempts", networkAttempts,
+				"rate_limit_retries", rateLimitRetries)
 			c.pushToFetchDLQ(ctx, task, workerID)
 			return
 		case <-ctx.Done():
@@ -156,25 +157,32 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		}
 
 		// Safety net: don't try indefinitely
-		if totalAttempts >= maxTotalAttempts {
+		if networkAttempts+rateLimitRetries >= maxTotalAttempts {
 			c.logger.Warn("max total attempts reached, dropping task",
 				"worker_id", workerID, "match_id", task.MatchID,
-				"total_attempts", totalAttempts)
-			c.pushToFetchDLQ(ctx, task, workerID)
-			return
-		}
-
-		// Stop if we've exhausted network retry budget
-		if totalAttempts > 0 && totalAttempts >= c.maxRetries+c.maxRateLimitRetries {
-			c.logger.Warn("retry budgets exhausted, dropping task",
-				"worker_id", workerID, "match_id", task.MatchID,
-				"network_attempts", c.maxRetries,
+				"network_attempts", networkAttempts,
 				"rate_limit_retries", rateLimitRetries)
 			c.pushToFetchDLQ(ctx, task, workerID)
 			return
 		}
 
-		totalAttempts++
+		// Stop if we've exhausted either budget independently
+		if networkAttempts >= c.maxRetries {
+			c.logger.Warn("network retry budget exhausted, dropping task",
+				"worker_id", workerID, "match_id", task.MatchID,
+				"network_attempts", networkAttempts,
+				"rate_limit_retries", rateLimitRetries)
+			c.pushToFetchDLQ(ctx, task, workerID)
+			return
+		}
+		if rateLimitRetries >= c.maxRateLimitRetries {
+			c.logger.Warn("rate limit retry budget exhausted, dropping task",
+				"worker_id", workerID, "match_id", task.MatchID,
+				"network_attempts", networkAttempts,
+				"rate_limit_retries", rateLimitRetries)
+			c.pushToFetchDLQ(ctx, task, workerID)
+			return
+		}
 
 		// Wait for a non-empty pool.
 		proxyCount, err := c.redisClient.GetProxyCount(ctx)
@@ -198,8 +206,9 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 
 		proxyURL, err := c.redisClient.GetWeightedRandomProxy(ctx)
 		if err != nil {
+			networkAttempts++
 			c.logger.Warn("no proxy available, backing off",
-				"worker_id", workerID, "attempt", totalAttempts, "error", err)
+				"worker_id", workerID, "attempt", networkAttempts, "error", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -245,6 +254,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		// Do the fetch.
 		resp, err := c.httpClient.Get(ctx, task.URL, proxyURL)
 		if err != nil {
+			networkAttempts++
 			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
 			c.httpClient.RemoveProxy(proxyURL)
 			c.logger.Debug("fetch failed (network error)",
@@ -253,6 +263,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			networkAttempts++
 			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
 			c.httpClient.RemoveProxy(proxyURL)
 			c.logger.Debug("fetch failed (bad status)",
@@ -275,7 +286,8 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 			"match_id", task.MatchID,
 			"proxy", proxyURL,
 			"worker_id", workerID,
-			"attempt", totalAttempts)
+			"network_attempts", networkAttempts,
+			"rate_limit_retries", rateLimitRetries)
 		return
 	}
 }

@@ -19,3 +19,4 @@ vendor/
 # Docker
 .docker/
 .idea/
+.dumperrc

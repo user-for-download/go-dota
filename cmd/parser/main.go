@@ -38,12 +38,14 @@ func main() {
 	defer pgClient.Close()
 
 	repo := postgresstore.NewRepository(pgClient)
-	if err := repo.Migrate(ctx); err != nil {
-		log.Error("failed to run migrations", "error", err)
-		os.Exit(1)
-	}
 
+	// Only run migrations if explicitly requested via --migrate-only.
+	// Normal operation expects the dedicated migrate service to have run already.
 	if *migrateOnly {
+		if err := repo.Migrate(ctx); err != nil {
+			log.Error("failed to run migrations", "error", err)
+			os.Exit(1)
+		}
 		log.Info("migrations complete – exiting")
 		return
 	}

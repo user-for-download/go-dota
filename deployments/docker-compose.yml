@@ -35,11 +35,13 @@ services:
       timeout: 5s
       retries: 5
 
-  migrate:
+migrate:
     profiles:
+      - all
       - go
       - init
     image: deployments-parser:latest
+    restart: "no"
     entrypoint: ["/bin/parser", "--migrate-only"]
     depends_on:
       postgres:
@@ -66,11 +68,11 @@ services:
       HEALTH_CHECK_URL: https://httpbin.org/ip
       PROXY_REFRESH_MIN: "15"
     healthcheck:
-      test: ["CMD", "redis-cli", "-h", "redis", "LLEN", "proxy_pool"]
+      test: ["CMD-SHELL", "test \"$(redis-cli -h redis SCARD proxy_pool)\" -gt 0"]
       interval: 5s
       timeout: 3s
-      retries: 10
-      start_period: 10s
+      retries: 60
+      start_period: 15s
 
   collector:
     image: deployments-collector:latest
@@ -80,6 +82,8 @@ services:
     restart: unless-stopped
     depends_on:
       redis:
+        condition: service_healthy
+      proxy-manager:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -93,6 +97,8 @@ services:
       - go
     restart: unless-stopped
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       postgres:
@@ -107,11 +113,15 @@ services:
     profiles:
       - fetch
       - go
-    restart: unless-stopped
+    restart: "no"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      proxy-manager:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -136,7 +146,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -150,29 +160,17 @@ services:
     restart: unless-stopped
     command: ["/bin/enricher", "--interval=24h"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      proxy-manager:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
-
-#  enricher-init:
-#    image: deployments-enricher:latest
-#    profiles:
-#      - init
-#      - go
-#    restart: "no"
-#    entrypoint: ["/bin/enricher", "--once"]
-#    depends_on:
-#      migrate:
-#        condition: service_completed_successfully
-#      proxy-manager:
-#        condition: service_healthy
-#    environment:
-#      POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
-#      REDIS_URL: redis://redis:6379/0
 
   partition-manager:
     image: deployments-partition-manager:latest
@@ -182,6 +180,8 @@ services:
     restart: unless-stopped
     command: ["/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment:

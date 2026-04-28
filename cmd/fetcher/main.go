@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/user-for-download/go-dota/internal/config"
 	"github.com/user-for-download/go-dota/internal/logger"
+	"github.com/user-for-download/go-dota/internal/readiness"
 	postgresstore "github.com/user-for-download/go-dota/internal/storage/postgres"
 	redisstore "github.com/user-for-download/go-dota/internal/storage/redis"
 	"github.com/user-for-download/go-dota/internal/worker"
@@ -64,8 +66,16 @@ func main() {
 	defer pgClient.Close()
 
 	repo := postgresstore.NewRepository(pgClient)
-	if err := repo.Migrate(ctx); err != nil {
-		log.Error("failed to run migrations", "error", err)
+	// Migrations are handled by the dedicated migrate service.
+
+	// Wait for dependencies to be ready
+	if err := readiness.WaitAll(ctx, log,
+		readiness.Check{Name: "redis", Probe: readiness.Redis(redisClient.Instance()), Timeout: 10 * time.Second},
+		readiness.Check{Name: "postgres", Probe: readiness.Postgres(pgClient.Pool()), Timeout: 10 * time.Second},
+		readiness.Check{Name: "schema", Probe: readiness.SchemaApplied(pgClient.Pool(), "001_init.sql"), Timeout: 10 * time.Second},
+		readiness.Check{Name: "proxy_pool", Probe: readiness.ProxyPool(redisClient.Instance(), 5), Timeout: 10 * time.Minute},
+	); err != nil {
+		log.Error("not ready", "error", err)
 		os.Exit(1)
 	}
 

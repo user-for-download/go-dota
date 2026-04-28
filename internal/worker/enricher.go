@@ -112,7 +112,9 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 
 		var proxy string
 		isDirect := attempt == maxAttempts
-		if !isDirect && e.redis != nil {
+		if isDirect {
+			proxy = ""
+		} else if e.redis != nil {
 			p, err := e.redis.GetWeightedRandomProxy(ctx)
 			if err != nil {
 				e.log.Warn("no proxy available, will try direct",
