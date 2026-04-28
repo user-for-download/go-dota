@@ -466,7 +466,7 @@ func (pm *ProxyManager) healthCheckProxies(ctx context.Context, proxies []string
 			}
 			defer pm.checkSemaphore.Release(1)
 
-			if pm.checkProxyIsolated(ctx, proxyURL) {
+			if pm.checkProxy(ctx, proxyURL) {
 				mu.Lock()
 				valid = append(valid, proxyURL)
 				mu.Unlock()
@@ -478,30 +478,6 @@ func (pm *ProxyManager) healthCheckProxies(ctx context.Context, proxies []string
 }
 
 func (pm *ProxyManager) checkProxy(ctx context.Context, proxyURL string) bool {
-	transport, err := pm.transportPool.GetOrCreate(proxyURL)
-	if err != nil {
-		pm.logger.Warn("invalid proxy URL", "proxy", proxyURL, "error", err)
-		return false
-	}
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, pm.healthCheckURL, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		pm.logger.Debug("proxy health check failed", "proxy", proxyURL, "error", err)
-		return false
-	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-func (pm *ProxyManager) checkProxyIsolated(ctx context.Context, proxyURL string) bool {
 	proxyParsed, err := url.Parse(proxyURL)
 	if err != nil {
 		pm.logger.Warn("invalid proxy URL", "proxy", proxyURL, "error", err)

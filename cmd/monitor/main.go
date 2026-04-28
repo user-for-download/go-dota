@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -125,6 +126,8 @@ type metricsOutput struct {
 	FetcherLastRunDiscovered  int      `json:"fetcher_last_run_discovered,omitempty"`
 	FetcherLastRunNewInDB     int      `json:"fetcher_last_run_new_in_db,omitempty"`
 	FetcherLastRunPushed      int      `json:"fetcher_last_run_pushed,omitempty"`
+	ParserRetryCountAvg       float64  `json:"parser_retry_count_avg,omitempty"`
+	DLQOldestAgeSeconds       int64    `json:"dlq_oldest_age_seconds,omitempty"`
 	Errors                    []string `json:"errors,omitempty"`
 }
 
@@ -175,6 +178,15 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		out.RedisPermanentFailedQueue = val
 	}
 
+	// Calculate retry count average from retry_count:* keys
+	retryCountAvg, oldestAge, err := h.calculateRetryMetrics(ctx)
+	if err != nil {
+		h.log.Warn("metrics: calculate retry metrics failed", "error", err)
+	} else {
+		out.ParserRetryCountAvg = retryCountAvg
+		out.DLQOldestAgeSeconds = oldestAge
+	}
+
 	if total, parsed, players, err := h.repo.CountMatches(ctx); err != nil {
 		h.log.Warn("metrics: CountMatches failed", "error", err)
 		errs = append(errs, "postgres: failed to count matches")
@@ -191,4 +203,54 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 
 	resp, _ := json.Marshal(out)
 	_, _ = w.Write(resp)
+}
+
+func (h *handler) calculateRetryMetrics(ctx context.Context) (avg float64, oldestAge int64, err error) {
+	const retryKeyPrefix = "retry_count:"
+	const retryTTL = 86400 // seconds, matches queue.go retryCountTTL
+
+	var totalRetry int64
+	var count int64
+	var oldestTTL int64 = -1
+
+	// Use SCAN to find all retry_count:* keys (capped for performance)
+	iter := h.rdb.Scan(ctx, 0, retryKeyPrefix+"*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+
+		// Get retry count
+		retryStr, err := h.rdb.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		retryVal, err := strconv.ParseInt(retryStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		totalRetry += retryVal
+		count++
+
+		// Get TTL for oldest calculation
+		ttl, err := h.rdb.TTL(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		if ttl > 0 {
+			age := retryTTL - int64(ttl.Seconds())
+			if oldestTTL < 0 || age > oldestTTL {
+				oldestTTL = age
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	if count > 0 {
+		avg = float64(totalRetry) / float64(count)
+	}
+	if oldestTTL > 0 {
+		oldestAge = oldestTTL
+	}
+	return avg, oldestAge, nil
 }

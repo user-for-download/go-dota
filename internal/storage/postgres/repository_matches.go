@@ -198,19 +198,6 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 	return nil
 }
 
-// MatchExists reports whether a match is already stored (in any partition).
-func (r *Repository) MatchExists(ctx context.Context, matchID, startTime int64) (bool, error) {
-	var exists bool
-	err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM matches WHERE match_id = $1 AND start_time = $2)`,
-		matchID, startTime,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("match exists: %w", err)
-	}
-	return exists, nil
-}
-
 // FilterUnknownMatchIDs returns the subset of matchIDs NOT present in matches.
 func (r *Repository) FilterUnknownMatchIDs(ctx context.Context, ids []int64) ([]int64, error) {
 	if len(ids) == 0 {

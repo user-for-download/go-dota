@@ -16,6 +16,17 @@ var migrationsFS embed.FS
 
 const migrationAdvisoryLockID int64 = 727274
 
+// Migrate runs all embedded SQL migrations in order.
+//
+// Design decisions:
+//   - Uses blocking pg_advisory_lock to ensure only one instance applies migrations.
+//     This prevents race conditions where two instances both see "no migrations applied"
+//     and try to apply the same migration simultaneously.
+//   - Lock is automatically released when the connection is dropped (client disconnect).
+//   - Each migration runs inside a transaction; if it fails, the transaction is rolled back
+//     and the error is propagated.
+//   - Migrations are idempotent: a migration is skipped if its version already exists
+//     in schema_migrations table.
 func (r *Repository) Migrate(ctx context.Context) error {
 	log := slog.Default()
 
@@ -25,7 +36,12 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	}
 	defer conn.Release()
 
-	// Ensure we can lock
+	// Ensure we can lock. Use blocking lock - if another instance holds it, we wait.
+	// This is safer-by-default for startup; prevents concurrent migration attempts.
+	// The lock automatically releases when the connection is dropped.
+	if _, err := conn.Exec(ctx, "SET LOCAL lock_timeout = '60s'"); err != nil {
+		return fmt.Errorf("set lock timeout: %w", err)
+	}
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockID); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}

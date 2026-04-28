@@ -2,11 +2,16 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/user-for-download/go-dota/internal/models"
 )
+
+// ErrMatchLocked is returned when another transaction is already processing this match.
+// The caller should treat this as a transient error and retry.
+var ErrMatchLocked = errors.New("match is being processed by another transaction")
 
 // IngestMatch inserts a match with full FK compliance.
 // All nested data (players, draft, events, timeseries) is upserted.
@@ -23,10 +28,9 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 			return fmt.Errorf("advisory lock: %w", err)
 		}
 		if !got {
-			// Another transaction is handling this match.
-			// Note: if the other tx fails after acquiring the lock, the match may be lost.
-			// Caller treats this as success and deletes raw data - intended behavior.
-			return nil
+			// Another transaction is processing this match.
+			// Return error so caller can retry instead of silently dropping the task.
+			return ErrMatchLocked
 		}
 
 		// FK stubs - teams, leagues, and heroes must exist before player_matches

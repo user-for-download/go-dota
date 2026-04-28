@@ -59,6 +59,14 @@ Invalid messages are sent to `permanent_failed_queue` and never retried.
 
 Migrations are embedded (`internal/storage/postgres/migrations/`) and applied by the parser/fetcher startup.
 
+### Schema Migrations
+Migrations are managed by the `Migrate()` function in `repository.go`:
+- **Embedded**: SQL files are bundled into the binary via `go:embed`.
+- **Advisory lock**: Uses `pg_advisory_lock` with a 60-second timeout to ensure only one instance applies migrations.
+- **Idempotent**: Each migration is recorded in `schema_migrations` table; duplicates are skipped.
+- **Lock behavior**: If one instance holds the lock (e.g., crashed mid-migration), others wait up to 60s.
+  The lock automatically releases if the connection drops.
+
 ## Deployment
 All services are built from a shared base image (`Dockerfile.base`) and deployed via `docker‑compose.yml`.  
 Configuration is provided through environment variables (see `internal/config/config.go`).  

@@ -129,12 +129,12 @@ func TestMatch_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "wrong player count",
+			name: "too many players",
 			m: Match{
 				MatchID:   1,
 				StartTime: 1710000000,
 				Duration:  2400,
-				Players:   mkPlayers(0, 1, 2),
+				Players:   mkPlayers(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
 			},
 			wantErr: true,
 		},
@@ -454,6 +454,47 @@ func TestBuildPlayerTimeseries_MismatchedArrayLengths(t *testing.T) {
 	}
 	if rows[0].Gold == nil || *rows[0].Gold != 100 {
 		t.Errorf("row 0 gold=%v, want 100", rows[0].Gold)
+	}
+}
+
+// ---------------------------------------------------------------------
+// IntBool
+// ---------------------------------------------------------------------
+
+func TestIntBool_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+		wantErr bool
+	}{
+		{"bool true", `true`, true, false},
+		{"bool false", `false`, false, false},
+		{"int 1", `1`, true, false},
+		{"int 0", `0`, false, false},
+		{"null", `null`, false, false},
+		{"garbage string", `"bad"`, false, true},
+		{"array", `[]`, false, true},
+		{"object", `{}`, false, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var ib IntBool
+			err := json.Unmarshal([]byte(tc.payload), &ib)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if bool(ib) != tc.want {
+				t.Errorf("IntBool = %v, want %v", bool(ib), tc.want)
+			}
+		})
 	}
 }
 
