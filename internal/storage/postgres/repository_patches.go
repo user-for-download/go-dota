@@ -20,6 +20,20 @@ func (r *Repository) UpsertPatches(ctx context.Context, patches []PatchRef) erro
 	if len(patches) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(patches); i += batchSize {
+		end := i + batchSize
+		if end > len(patches) {
+			end = len(patches)
+		}
+		if err := r.upsertPatchesChunk(ctx, patches[i:end]); err != nil {
+			return fmt.Errorf("patches chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertPatchesChunk(ctx context.Context, patches []PatchRef) error {
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
 		placeholders := make([]string, len(patches))
 		args := make([]any, 0, len(patches)*4)

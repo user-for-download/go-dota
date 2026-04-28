@@ -1,0 +1,3 @@
+SELECT ARRAY_AGG(match_id ORDER BY start_time DESC) AS match_ids
+FROM matches
+WHERE start_time >= (EXTRACT(EPOCH FROM TIMESTAMPTZ '2025-01-01T00:50:59.580Z'))::BIGINT

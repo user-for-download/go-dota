@@ -217,6 +217,13 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 			continue
 		}
 
+		if !isUsableProxyURL(proxyURL) {
+			c.logger.Warn("proxy pool returned malformed URL, removing",
+				"proxy", proxyURL, "worker_id", workerID)
+			_ = c.redisClient.RemoveProxy(ctx, proxyURL)
+			continue
+		}
+
 		// Respect per-proxy rate limits.
 		allowed, err := c.redisClient.AtomicRateLimit(ctx, proxyURL)
 		if err != nil {

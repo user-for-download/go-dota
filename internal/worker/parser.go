@@ -148,6 +148,7 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 	data, err := p.redisClient.GetRawData(ctx, taskID)
 	if err != nil {
 		log.Error("get raw data failed", "error", err)
+		_ = p.redisClient.IncrParseFailure(ctx, "raw_data_read")
 		_ = p.redisClient.ExtendRawDataTTL(ctx, taskID)
 		_ = p.redisClient.IncrementRetryCount(ctx, taskID)
 		_ = p.redisClient.PushFailedTask(ctx, taskID)
@@ -155,12 +156,14 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 	}
 	if data == nil {
 		log.Warn("raw data expired or missing, discarding task")
+		_ = p.redisClient.IncrParseFailure(ctx, "raw_data_expired")
 		return
 	}
 
 	var m models.Match
 	if err := json.Unmarshal(data, &m); err != nil {
 		log.Error("unmarshal match payload failed (poison pill)", "error", err)
+		_ = p.redisClient.IncrParseFailure(ctx, string(postgresstore.IngestErrUnmarshal))
 		_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
 		_ = p.redisClient.DeleteRetryCount(ctx, taskID)
 		return
@@ -168,13 +171,17 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 
 	if err := m.Validate(); err != nil {
 		log.Error("match validation failed (poison pill)", "match_id", m.MatchID, "error", err)
+		_ = p.redisClient.IncrIngestFailure(ctx,
+			string(postgresstore.IngestErrValidation), err.Error(), m.MatchID)
 		_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
 		_ = p.redisClient.DeleteRetryCount(ctx, taskID)
 		return
 	}
 
 	if err := p.pgRepo.IngestMatch(ctx, &m); err != nil {
-		log.Error("ingest match failed", "match_id", m.MatchID, "error", err)
+		kind := postgresstore.ClassifyIngestError(err)
+		log.Error("ingest match failed", "match_id", m.MatchID, "kind", kind, "error", err)
+		_ = p.redisClient.IncrIngestFailure(ctx, string(kind), err.Error(), m.MatchID)
 
 		if isPermanentIngestError(err) {
 			_ = p.redisClient.PushPermanentFailedTask(ctx, taskID)
@@ -188,6 +195,7 @@ func (p *Parser) processTask(ctx context.Context, taskID string, workerID int) {
 		return
 	}
 
+	_ = p.redisClient.IncrIngestSuccess(ctx)
 	if err := p.redisClient.DeleteRawData(ctx, taskID); err != nil {
 		log.Warn("delete raw data failed", "error", err)
 	}

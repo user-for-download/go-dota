@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/user-for-download/go-dota/internal/httpx"
@@ -74,8 +76,7 @@ func NewEnricher(
 }
 
 func (e *Enricher) Run(ctx context.Context) error {
-	var errs []error
-	steps := []struct {
+	criticalSteps := []struct {
 		name string
 		fn   func(context.Context) error
 	}{
@@ -85,27 +86,49 @@ func (e *Enricher) Run(ctx context.Context) error {
 		{"game_modes", e.enrichGameModes},
 		{"lobby_types", e.enrichLobbyTypes},
 		{"leagues", e.enrichLeagues},
+	}
+	softSteps := []struct {
+		name string
+		fn   func(context.Context) error
+	}{
 		{"teams", e.enrichTeams},
 	}
-	for _, s := range steps {
+
+	var criticalErrs, softErrs []error
+
+	for _, s := range criticalSteps {
 		if err := s.fn(ctx); err != nil {
-			e.log.Error("enrich step failed", "step", s.name, "error", err)
-			errs = append(errs, fmt.Errorf("%s: %w", s.name, err))
+			e.log.Error("critical enrich step failed", "step", s.name, "error", err)
+			criticalErrs = append(criticalErrs, fmt.Errorf("%s: %w", s.name, err))
 		}
 	}
-	if len(errs) > 0 {
-		e.log.Warn("enricher completed with errors, setting bootstrap marker anyway", "error_count", len(errs))
+
+	for _, s := range softSteps {
+		if err := s.fn(ctx); err != nil {
+			e.log.Warn("soft enrich step failed", "step", s.name, "error", err)
+			softErrs = append(softErrs, fmt.Errorf("%s: %w", s.name, err))
+		}
 	}
+
+	if len(criticalErrs) > 0 {
+		e.log.Error("critical enricher steps failed; NOT marking bootstrap",
+			"critical_errors", len(criticalErrs),
+			"soft_errors", len(softErrs))
+		return errors.Join(append(criticalErrs, softErrs...)...)
+	}
+
 	if e.redis != nil {
-		// 7-day TTL: if enricher is down for >7 days, downstream services will
-		// block instead of running on stale lookup data. Refreshed each pass.
 		if err := e.redis.Instance().Set(ctx, "enricher:bootstrapped", "1", 7*24*time.Hour).Err(); err != nil {
 			e.log.Warn("failed to set enricher bootstrap marker", "error", err)
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+
+	if len(softErrs) > 0 {
+		e.log.Warn("enricher complete with soft errors", "soft_errors", len(softErrs))
+		return errors.Join(softErrs...)
 	}
+
+	e.log.Info("enricher pass complete")
 	return nil
 }
 
@@ -130,6 +153,11 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 				e.log.Warn("no proxy available, will try direct",
 					"url", url, "attempt", attempt, "error", err)
 				isDirect = true
+			} else if !isUsableProxyURL(p) {
+				e.log.Warn("proxy pool returned malformed URL, removing",
+					"proxy", p, "url", url)
+				_ = e.redis.RemoveProxy(ctx, p)
+				continue
 			} else {
 				proxy = p
 			}
@@ -186,6 +214,21 @@ func backoff(ctx context.Context, attempt int) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+func isUsableProxyURL(s string) bool {
+	if s == "" {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.Port() == "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks4", "socks5":
+		return true
+	}
+	return false
 }
 
 type odHero struct {
@@ -267,13 +310,20 @@ type odTeam struct {
 	LastMatchTime int64   `json:"last_match_time"`
 }
 
+type explorerTeamResponse struct {
+	Rows []odTeam `json:"rows"`
+}
+
 func (e *Enricher) enrichTeams(ctx context.Context) error {
-	var teams []odTeam
-	if err := e.fetchJSON(ctx, e.teamsURL, &teams); err != nil {
+	var wrapper explorerTeamResponse
+	if err := e.fetchJSON(ctx, e.teamsURL, &wrapper); err != nil {
 		return err
 	}
-	refs := make([]postgres.TeamRef, 0, len(teams))
-	for _, t := range teams {
+	refs := make([]postgres.TeamRef, 0, len(wrapper.Rows))
+	for _, t := range wrapper.Rows {
+		if t.TeamID == 0 {
+			continue
+		}
 		refs = append(refs, postgres.TeamRef{
 			TeamID:        t.TeamID,
 			Name:          t.Name,
@@ -289,13 +339,13 @@ func (e *Enricher) enrichTeams(ctx context.Context) error {
 		return err
 	}
 	withRating := 0
-	for _, t := range teams {
+	for _, t := range wrapper.Rows {
 		if t.Rating > 0 || t.Wins > 0 {
 			withRating++
 		}
 	}
-	e.log.Info("enriched teams", "count", len(teams), "with_rating", withRating)
-	return nil
+	e.log.Info("enriched teams", "count", len(wrapper.Rows), "with_rating", withRating)
+return nil
 }
 
 type odItem struct {

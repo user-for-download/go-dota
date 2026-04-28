@@ -33,6 +33,20 @@ func (r *Repository) UpsertItems(ctx context.Context, items []ItemRef) error {
 	if len(items) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		if err := r.upsertItemsChunk(ctx, items[i:end]); err != nil {
+			return fmt.Errorf("items chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertItemsChunk(ctx context.Context, items []ItemRef) error {
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
 		placeholders := make([]string, len(items))
 		args := make([]interface{}, 0, len(items)*9)
@@ -68,6 +82,20 @@ func (r *Repository) UpsertGameModes(ctx context.Context, modes []GameModeRef) e
 	if len(modes) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(modes); i += batchSize {
+		end := i + batchSize
+		if end > len(modes) {
+			end = len(modes)
+		}
+		if err := r.upsertGameModesChunk(ctx, modes[i:end]); err != nil {
+			return fmt.Errorf("game_modes chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertGameModesChunk(ctx context.Context, modes []GameModeRef) error {
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
 		placeholders := make([]string, len(modes))
 		args := make([]interface{}, 0, len(modes)*2)
@@ -94,6 +122,20 @@ func (r *Repository) UpsertLobbyTypes(ctx context.Context, types []LobbyTypeRef)
 	if len(types) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(types); i += batchSize {
+		end := i + batchSize
+		if end > len(types) {
+			end = len(types)
+		}
+		if err := r.upsertLobbyTypesChunk(ctx, types[i:end]); err != nil {
+			return fmt.Errorf("lobby_types chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertLobbyTypesChunk(ctx context.Context, types []LobbyTypeRef) error {
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
 		placeholders := make([]string, len(types))
 		args := make([]interface{}, 0, len(types)*2)

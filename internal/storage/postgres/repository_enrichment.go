@@ -20,6 +20,20 @@ func (r *Repository) UpsertHeroes(ctx context.Context, heroes []HeroRef) error {
 	if len(heroes) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(heroes); i += batchSize {
+		end := i + batchSize
+		if end > len(heroes) {
+			end = len(heroes)
+		}
+		if err := r.upsertHeroesChunk(ctx, heroes[i:end]); err != nil {
+			return fmt.Errorf("heroes chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertHeroesChunk(ctx context.Context, heroes []HeroRef) error {
 	placeholders := make([]string, len(heroes))
 	args := make([]interface{}, 0, len(heroes)*7)
 	for i, h := range heroes {
@@ -61,6 +75,20 @@ func (r *Repository) UpsertLeagues(ctx context.Context, leagues []LeagueRef) err
 	if len(leagues) == 0 {
 		return nil
 	}
+	const batchSize = 1000
+	for i := 0; i < len(leagues); i += batchSize {
+		end := i + batchSize
+		if end > len(leagues) {
+			end = len(leagues)
+		}
+		if err := r.upsertLeaguesChunk(ctx, leagues[i:end]); err != nil {
+			return fmt.Errorf("leagues chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertLeaguesChunk(ctx context.Context, leagues []LeagueRef) error {
 	placeholders := make([]string, len(leagues))
 	args := make([]interface{}, 0, len(leagues)*5)
 	for i, l := range leagues {

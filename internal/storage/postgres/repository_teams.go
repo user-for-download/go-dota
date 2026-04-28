@@ -41,12 +41,26 @@ type TeamRef struct {
 
 // UpsertTeamsBulk inserts or updates multiple teams in a single transaction.
 // This is significantly more efficient than per-row UpsertTeam for bulk enrichment.
+const teamBatchSize = 1000
+
 func (r *Repository) UpsertTeamsBulk(ctx context.Context, teams []TeamRef) error {
 	if len(teams) == 0 {
 		return nil
 	}
 
-	// Build multi-VALUES clause
+	for i := 0; i < len(teams); i += teamBatchSize {
+		end := i + teamBatchSize
+		if end > len(teams) {
+			end = len(teams)
+		}
+		if err := r.upsertTeamsChunk(ctx, teams[i:end]); err != nil {
+			return fmt.Errorf("teams chunk [%d:%d]: %w", i, end, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) upsertTeamsChunk(ctx context.Context, teams []TeamRef) error {
 	placeholders := make([]string, len(teams))
 	args := make([]interface{}, 0, len(teams)*4)
 	for i, t := range teams {
@@ -69,7 +83,6 @@ func (r *Repository) UpsertTeamsBulk(ctx context.Context, teams []TeamRef) error
 		return fmt.Errorf("bulk upsert teams: %w", err)
 	}
 
-	// Separate bulk upsert for ratings (only teams with rating data)
 	var ratingRefs []TeamRef
 	for _, t := range teams {
 		if t.Rating > 0 || t.Wins > 0 || t.Losses > 0 {

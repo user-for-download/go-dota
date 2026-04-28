@@ -115,20 +115,25 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type metricsOutput struct {
-	RedisFetchQueue           int64    `json:"redis_fetch_queue"`
-	RedisParseQueue           int64    `json:"redis_parse_queue"`
-	RedisFailedQueue          int64    `json:"redis_failed_queue"`
-	RedisPermanentFailedQueue int64    `json:"redis_permanent_failed_queue"`
-	MatchesCount              int64    `json:"matches_count"`
-	PlayerMatchesCount        int64    `json:"player_matches_count"`
-	ParsedMatchesCount        int64    `json:"parsed_matches_count"`
-	FetcherLastRunTS          int64    `json:"fetcher_last_run_ts,omitempty"`
-	FetcherLastRunDiscovered  int      `json:"fetcher_last_run_discovered,omitempty"`
-	FetcherLastRunNewInDB     int      `json:"fetcher_last_run_new_in_db,omitempty"`
-	FetcherLastRunPushed      int      `json:"fetcher_last_run_pushed,omitempty"`
-	ParserRetryCountAvg       float64  `json:"parser_retry_count_avg,omitempty"`
-	DLQOldestAgeSeconds       int64    `json:"dlq_oldest_age_seconds,omitempty"`
-	Errors                    []string `json:"errors,omitempty"`
+	RedisFetchQueue           int64            `json:"redis_fetch_queue"`
+	RedisParseQueue           int64            `json:"redis_parse_queue"`
+	RedisFailedQueue          int64            `json:"redis_failed_queue"`
+	RedisPermanentFailedQueue int64           `json:"redis_permanent_failed_queue"`
+	MatchesCount              int64            `json:"matches_count"`
+	PlayerMatchesCount        int64            `json:"player_matches_count"`
+	ParsedMatchesCount        int64            `json:"parsed_matches_count"`
+	FetcherLastRunTS          int64            `json:"fetcher_last_run_ts,omitempty"`
+	FetcherLastRunDiscovered  int              `json:"fetcher_last_run_discovered,omitempty"`
+	FetcherLastRunNewInDB     int              `json:"fetcher_last_run_new_in_db,omitempty"`
+	FetcherLastRunPushed      int              `json:"fetcher_last_run_pushed,omitempty"`
+	ParserRetryCountAvg       float64          `json:"parser_retry_count_avg,omitempty"`
+	DLQOldestAgeSeconds       int64            `json:"dlq_oldest_age_seconds,omitempty"`
+	IngestSuccessTotal        int64            `json:"ingest_success_total"`
+	IngestFailedTotal         int64            `json:"ingest_failed_total"`
+	ParseFailedTotal          int64            `json:"parse_failed_total"`
+	IngestFailedByKind        map[string]int64 `json:"ingest_failed_by_kind,omitempty"`
+	LastFailedSample          string           `json:"last_failed_sample,omitempty"`
+	Errors                    []string         `json:"errors,omitempty"`
 }
 
 func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +205,26 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		out.Errors = errs
 		w.WriteHeader(http.StatusInternalServerError)
 	}
+
+	ingestPipe := h.rdb.Pipeline()
+	sucCmd := ingestPipe.Get(ctx, "metrics:ingest_success_total")
+	failCmd := ingestPipe.Get(ctx, "metrics:ingest_failed_total")
+	parseFailCmd := ingestPipe.Get(ctx, "metrics:parse_failed_total")
+	byKindCmd := ingestPipe.HGetAll(ctx, "metrics:ingest_failed_by_kind")
+	sampleCmd := ingestPipe.Get(ctx, "metrics:last_failed_sample")
+	_, _ = ingestPipe.Exec(ctx)
+
+	out.IngestSuccessTotal, _ = sucCmd.Int64()
+	out.IngestFailedTotal, _ = failCmd.Int64()
+	out.ParseFailedTotal, _ = parseFailCmd.Int64()
+	if vals, err := byKindCmd.Result(); err == nil && len(vals) > 0 {
+		out.IngestFailedByKind = make(map[string]int64, len(vals))
+		for k, v := range vals {
+			n, _ := strconv.ParseInt(v, 10, 64)
+			out.IngestFailedByKind[k] = n
+		}
+	}
+	out.LastFailedSample, _ = sampleCmd.Result()
 
 	resp, _ := json.Marshal(out)
 	_, _ = w.Write(resp)
