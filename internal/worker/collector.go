@@ -259,7 +259,7 @@ func (c *Collector) processTask(ctx context.Context, task models.FetchTask, work
 		}
 
 		// Do the fetch.
-		resp, err := c.httpClient.Get(ctx, task.URL, proxyURL)
+		resp, err := c.httpClient.Get(taskCtx, task.URL, proxyURL)
 		if err != nil {
 			networkAttempts++
 			_ = c.redisClient.RecordProxyFailure(ctx, proxyURL, c.maxProxyFails)
@@ -303,6 +303,14 @@ func (c *Collector) pushToFetchDLQ(ctx context.Context, task models.FetchTask, w
 	if err := c.redisClient.PushFetchDLQTask(ctx, task); err != nil {
 		c.logger.Error("failed to push task to fetch DLQ",
 			"worker_id", workerID, "error", err)
+	}
+	if task.MatchID != "" {
+		if err := c.redisClient.UnmarkFetchIDSeen(ctx, task.MatchID); err != nil {
+			c.logger.Warn("failed to unmark fetch id after fetch DLQ",
+				"worker_id", workerID,
+				"match_id", task.MatchID,
+				"error", err)
+		}
 	}
 }
 

@@ -190,28 +190,33 @@ func TestPlayerSlot_Helpers(t *testing.T) {
 func TestMatchPlayer_SideAndWon(t *testing.T) {
 	tests := []struct {
 		slot        int16
-		radiantWin  bool
+		radiantWin  *bool
 		wantRadiant bool
-		wantWon     bool
+		wantWon     *bool
 	}{
-		{0, true, true, true},
-		{4, true, true, true},
-		{127, true, true, true},
-		{128, true, false, false},
-		{132, false, false, true},
-		{128, false, false, true},
-		{0, false, true, false},
+		{0, boolPtr(true), true, boolPtr(true)},
+		{4, boolPtr(true), true, boolPtr(true)},
+		{127, boolPtr(true), true, boolPtr(true)},
+		{128, boolPtr(true), false, boolPtr(false)},
+		{132, boolPtr(false), false, boolPtr(true)},
+		{128, boolPtr(false), false, boolPtr(true)},
+		{0, boolPtr(false), true, boolPtr(false)},
+		{0, nil, true, nil},
 	}
 	for _, tc := range tests {
 		p := MatchPlayer{PlayerSlot: tc.slot}
 		if got := p.IsRadiantSide(); got != tc.wantRadiant {
 			t.Errorf("slot=%d IsRadiantSide=%v, want %v", tc.slot, got, tc.wantRadiant)
 		}
-		if got := p.Won(tc.radiantWin); got != tc.wantWon {
+		if got := p.Won(tc.radiantWin); (got == nil) != (tc.wantWon == nil) || (got != nil && tc.wantWon != nil && *got != *tc.wantWon) {
 			t.Errorf("slot=%d radiantWin=%v Won=%v, want %v",
 				tc.slot, tc.radiantWin, got, tc.wantWon)
 		}
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // ---------------------------------------------------------------------
@@ -423,9 +428,9 @@ func TestBuildPlayerTimeseries_NonMonotonic(t *testing.T) {
 	p := &MatchPlayer{
 		PlayerSlot: 0,
 		HeroID:     1,
-		Times:      []int32{0, 60, 60}, // duplicate minute 1
-		GoldT:      []int32{0, 100, 200},
-		XPT:        []int32{0, 50, 100},
+		Times:      []int32{0, 60, 30}, // decreasing minute (should error)
+		GoldT:      []int32{0, 100, 50},
+		XPT:        []int32{0, 50, 25},
 	}
 	_, err := BuildPlayerTimeseries(1, nil, p)
 	if err == nil {
@@ -433,6 +438,23 @@ func TestBuildPlayerTimeseries_NonMonotonic(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNonMonotonicTimes) {
 		t.Errorf("expected ErrNonMonotonicTimes, got %v", err)
+	}
+}
+
+func TestBuildPlayerTimeseries_DuplicateMinutes(t *testing.T) {
+	p := &MatchPlayer{
+		PlayerSlot: 0,
+		HeroID:     1,
+		Times:      []int32{0, 60, 60}, // duplicate minute 1 - should be skipped
+		GoldT:      []int32{0, 100, 200},
+		XPT:        []int32{0, 50, 100},
+	}
+	rows, err := BuildPlayerTimeseries(1, nil, p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows (minute 0 and 1), got %d", len(rows))
 	}
 }
 

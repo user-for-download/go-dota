@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +21,7 @@ import (
 type Fetcher struct {
 	redisClient   *redis.Client
 	repo          *postgres.Repository
-	key           string
-	sqlDir        string
+	sqlPath       string
 	logger        *slog.Logger
 	httpClient    *httpx.ProxiedClient
 	maxQueueSize  int64
@@ -33,7 +31,7 @@ type Fetcher struct {
 func NewFetcher(
 	redisClient *redis.Client,
 	repo *postgres.Repository,
-	key, sqlDir string,
+	sqlPath string,
 	logger *slog.Logger,
 	maxQueueSize int64,
 	maxProxyFails int,
@@ -48,8 +46,7 @@ func NewFetcher(
 	return &Fetcher{
 		redisClient:   redisClient,
 		repo:          repo,
-		key:           key,
-		sqlDir:        sqlDir,
+		sqlPath:       sqlPath,
 		logger:        logger,
 		httpClient:    httpx.NewProxiedClient(pool, 60*time.Second),
 		maxQueueSize:  maxQueueSize,
@@ -63,7 +60,7 @@ func (f *Fetcher) Run(ctx context.Context) error {
 		return fmt.Errorf("load query: %w", err)
 	}
 
-	f.logger.Info("fetcher started", "key", f.key)
+	f.logger.Info("fetcher started", "path", f.sqlPath)
 
 	if err := f.waitForProxies(ctx, 5*time.Minute); err != nil {
 		return fmt.Errorf("waiting for proxies: %w", err)
@@ -147,10 +144,9 @@ func (f *Fetcher) recordStats(ctx context.Context, discovered, newInDB, pushed i
 }
 
 func (f *Fetcher) loadQuery() (string, error) {
-	sqlFile := filepath.Join(f.sqlDir, f.key+".sql")
-	data, err := os.ReadFile(sqlFile)
+	data, err := os.ReadFile(f.sqlPath)
 	if err != nil {
-		return "", fmt.Errorf("read query file %s: %w", sqlFile, err)
+		return "", fmt.Errorf("read query file %s: %w", f.sqlPath, err)
 	}
 	sql := string(data)
 	sql = strings.ReplaceAll(sql, "\n", " ")
@@ -183,6 +179,52 @@ type explorerResponse struct {
 	Rows []map[string]interface{} `json:"rows"`
 }
 
+func extractMatchIDsFromRow(row map[string]interface{}) []int64 {
+	for _, key := range []string{"match_id", "match_ids"} {
+		if v, ok := row[key]; ok {
+			if ids := extractIDsFromValue(v); len(ids) > 0 {
+				return ids
+			}
+		}
+	}
+
+	var ids []int64
+	for _, v := range row {
+		ids = append(ids, extractIDsFromValue(v)...)
+	}
+	return ids
+}
+
+func extractIDsFromValue(v any) []int64 {
+	var extracted []int64
+	switch val := v.(type) {
+	case float64:
+		extracted = []int64{int64(val)}
+	case string:
+		for _, idStr := range strings.Split(val, ",") {
+			idStr = strings.TrimSpace(idStr)
+			if idStr == "" {
+				continue
+			}
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				extracted = append(extracted, id)
+			}
+		}
+	case []interface{}:
+		for _, item := range val {
+			switch inner := item.(type) {
+			case float64:
+				extracted = append(extracted, int64(inner))
+			case string:
+				if id, err := strconv.ParseInt(strings.TrimSpace(inner), 10, 64); err == nil {
+					extracted = append(extracted, id)
+				}
+			}
+		}
+	}
+	return extracted
+}
+
 func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64, error) {
 	var matchIDs []int64
 	var lastErr error
@@ -204,6 +246,14 @@ func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64,
 				return nil, ctx.Err()
 			}
 			lastErr = fmt.Errorf("no proxy available: %w", err)
+			continue
+		}
+
+		if !isUsableProxyURL(proxy) {
+			f.logger.Warn("proxy pool returned malformed URL, removing",
+				"attempt", attempt,
+				"proxy", proxy)
+			_ = f.redisClient.RemoveProxy(ctx, proxy)
 			continue
 		}
 
@@ -236,53 +286,18 @@ func (f *Fetcher) fetchMatchIDs(ctx context.Context, targetURL string) ([]int64,
 		}
 
 		if len(explorer.Rows) == 0 {
-			f.httpClient.RemoveProxy(proxy)
-			lastErr = fmt.Errorf("empty rows from explorer (proxy=%s)", proxy)
-			f.logger.Warn("explorer returned empty rows", "proxy", proxy)
-			continue
+			f.logger.Info("explorer returned empty rows (valid state, no new matches)", "proxy", proxy)
+			_ = f.redisClient.RecordProxySuccess(ctx, proxy)
+			return nil, nil
 		}
 
 		seen := make(map[int64]bool)
 		for _, row := range explorer.Rows {
-			idsRaw, ok := row["match_ids"]
-			if !ok {
-				continue
-			}
-
-			switch v := idsRaw.(type) {
-			case string:
-				for _, idStr := range strings.Split(v, ",") {
-					idStr = strings.TrimSpace(idStr)
-					if idStr == "" {
-						continue
-					}
-					id, err := strconv.ParseInt(idStr, 10, 64)
-					if err != nil {
-						continue
-					}
-					if !seen[id] {
-						seen[id] = true
-						matchIDs = append(matchIDs, id)
-					}
-				}
-			case []interface{}:
-				for _, idRaw := range v {
-					idStr, ok := idRaw.(string)
-					if !ok {
-						continue
-					}
-					idStr = strings.TrimSpace(idStr)
-					if idStr == "" {
-						continue
-					}
-					id, err := strconv.ParseInt(idStr, 10, 64)
-					if err != nil {
-						continue
-					}
-					if !seen[id] {
-						seen[id] = true
-						matchIDs = append(matchIDs, id)
-					}
+			foundIDs := extractMatchIDsFromRow(row)
+			for _, id := range foundIDs {
+				if !seen[id] {
+					seen[id] = true
+					matchIDs = append(matchIDs, id)
 				}
 			}
 		}

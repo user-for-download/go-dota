@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1.7
+FROM od-base-local AS builder
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    CGO_ENABLED=0 GOOS=linux go build -o /bin/monitor ./cmd/monitor
+
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates wget
 RUN adduser -D -u 10001 app
 WORKDIR /app
+COPY --from=builder /bin/monitor /bin/monitor
 USER app
 ENTRYPOINT ["/bin/monitor"]

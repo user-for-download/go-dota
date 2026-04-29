@@ -24,12 +24,18 @@ const (
 	retryCountPrefix    = "retry_count:"
 )
 
-const (
+var (
 	rawDataTTL      = 7200 * time.Second
 	seenSetFetchTTL = 86400 * time.Second
 	seenSetParseTTL = 86400 * time.Second
 	retryCountTTL   = 86400 * time.Second
 )
+
+func SetRawDataTTL(seconds int) {
+	if seconds > 0 {
+		rawDataTTL = time.Duration(seconds) * time.Second
+	}
+}
 
 func (c *Client) PushFetchTask(ctx context.Context, task models.FetchTask) error {
 	data, err := json.Marshal(task)
@@ -281,6 +287,10 @@ func (c *Client) MarkFetchIDSeen(ctx context.Context, id string) error {
 	pipe.Expire(ctx, seenSetFetchKey, seenSetFetchTTL)
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func (c *Client) UnmarkFetchIDSeen(ctx context.Context, id string) error {
+	return c.rdb.SRem(ctx, seenSetFetchKey, id).Err()
 }
 
 func (c *Client) MarkFetchIDSeenBatch(ctx context.Context, ids []string) error {

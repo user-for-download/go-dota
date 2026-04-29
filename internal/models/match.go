@@ -40,7 +40,7 @@ type Match struct {
 	MatchSeqNum           *int64  `json:"match_seq_num,omitempty"`
 	StartTime             int64   `json:"start_time"`
 	Duration              int32   `json:"duration"`
-	RadiantWin            bool    `json:"radiant_win"`
+	RadiantWin            *bool   `json:"radiant_win,omitempty"`
 	TowerStatusRadiant    *int16  `json:"tower_status_radiant,omitempty"`
 	TowerStatusDire       *int16  `json:"tower_status_dire,omitempty"`
 	BarracksStatusRadiant *int16  `json:"barracks_status_radiant,omitempty"`
@@ -51,6 +51,8 @@ type Match struct {
 	LobbyType             *int16  `json:"lobby_type,omitempty"`
 	GameMode              *int16  `json:"game_mode,omitempty"`
 	Cluster               *int16  `json:"cluster,omitempty"`
+	Region                *int16  `json:"region,omitempty"`
+	Skill                 *int16  `json:"skill,omitempty"`
 	Engine                *int16  `json:"engine,omitempty"`
 	HumanPlayers          *int16  `json:"human_players,omitempty"`
 	Version               *int16  `json:"version,omitempty"` // non-nil ⇔ replay parsed
@@ -66,6 +68,7 @@ type Match struct {
 	DireCaptain           *int64  `json:"dire_captain,omitempty"`
 	ReplaySalt            *int64  `json:"replay_salt,omitempty"`
 	ReplayURL             *string `json:"replay_url,omitempty"`
+	Pauses                json.RawMessage `json:"pauses,omitempty"`
 
 	// Nested collections
 	Players        []MatchPlayer   `json:"players"`
@@ -159,6 +162,7 @@ type MatchPlayer struct {
 	IsRoaming *bool  `json:"is_roaming,omitempty"`
 	PartyID   *int32 `json:"party_id,omitempty"`
 	PartySize *int16 `json:"party_size,omitempty"`
+	RankTier  *int16 `json:"rank_tier,omitempty"`
 
 	// Advanced (parsed-only)
 	Stuns                  *float32 `json:"stuns,omitempty"`
@@ -181,6 +185,11 @@ type MatchPlayer struct {
 	XPT   []int32 `json:"xp_t,omitempty"`
 	LHT   []int32 `json:"lh_t,omitempty"`
 	DNT   []int32 `json:"dn_t,omitempty"`
+
+	ThrowGold    *int32 `json:"throw,omitempty"`
+	ComebackGold *int32 `json:"comeback,omitempty"`
+	LossGold     *int32 `json:"loss,omitempty"`
+	WinGold      *int32 `json:"win,omitempty"`
 
 	// Ability upgrade order
 	AbilityUpgradesArr []int32 `json:"ability_upgrades_arr,omitempty"`
@@ -231,9 +240,14 @@ func (p *MatchPlayer) Slot() PlayerSlot { return PlayerSlot(p.PlayerSlot) }
 // IsRadiantSide reports whether the player is on Radiant.
 func (p *MatchPlayer) IsRadiantSide() bool { return p.Slot().IsRadiant() }
 
-// Won returns true if the player was on the winning side.
-// Caller must pass Match.RadiantWin.
-func (p *MatchPlayer) Won(radiantWin bool) bool { return p.IsRadiantSide() == radiantWin }
+// Won returns true if the player was on the winning side, nil if radiant_win is unknown.
+func (p *MatchPlayer) Won(radiantWin *bool) *bool {
+	if radiantWin == nil {
+		return nil
+	}
+	v := p.IsRadiantSide() == *radiantWin
+	return &v
+}
 
 // =====================================================================
 // Draft / objectives / chat / teamfights
@@ -389,13 +403,15 @@ func BuildPlayerTimeseries(matchID int64, patchID *int16, p *MatchPlayer) ([]Pla
 	for i := 0; i < minLen; i++ {
 		t := p.Times[i]
 		if t < 0 {
-			// Skip pre-horn samples; they'd collide with minute 0.
 			continue
 		}
 		minute := int16(t / 60)
-		if minute <= lastMinute {
-			return nil, fmt.Errorf("%w: slot=%d at index %d (minute %d <= last %d)",
+		if minute < lastMinute {
+			return nil, fmt.Errorf("%w: slot=%d at index %d (minute %d < last %d)",
 				ErrNonMonotonicTimes, p.PlayerSlot, i, minute, lastMinute)
+		}
+		if minute == lastMinute {
+			continue
 		}
 		lastMinute = minute
 

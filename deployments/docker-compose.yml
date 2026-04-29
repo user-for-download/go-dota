@@ -133,7 +133,7 @@ services:
       - all
       - go
     restart: unless-stopped
-    command: [ "--key=default", "--interval=24h" ]
+    command: [ "--file=default.sql", "--interval=24h" ]
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -20,6 +20,14 @@ func intBoolPtr(ib *models.IntBool) *bool {
 	return &b
 }
 
+func int32SliceJSON(v []int32) any {
+	if len(v) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return b
+}
+
 // upsertMatchTx inserts or updates the core matches row. start_time is required
 // in the INSERT so PostgreSQL can route to the correct partition.
 func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
@@ -33,18 +41,20 @@ func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
 			tower_status_radiant, tower_status_dire,
 			barracks_status_radiant, barracks_status_dire,
 			radiant_score, dire_score, first_blood_time,
-			lobby_type, game_mode, cluster, engine, human_players,
+			lobby_type, game_mode, cluster, region, skill, engine, human_players,
 			version, patch_id, positive_votes, negative_votes,
 			leagueid, series_id, series_type,
 			radiant_team_id, dire_team_id,
 			radiant_captain, dire_captain,
-			replay_salt, replay_url, is_parsed
+			replay_salt, replay_url, pauses, is_parsed
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
 			$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
+			$31,$32,$33,$34
 		)
 		ON CONFLICT (match_id, start_time) DO UPDATE SET
+			match_seq_num           = COALESCE(EXCLUDED.match_seq_num,           matches.match_seq_num),
 			duration                = EXCLUDED.duration,
 			radiant_win             = EXCLUDED.radiant_win,
 			tower_status_radiant    = COALESCE(EXCLUDED.tower_status_radiant,    matches.tower_status_radiant),
@@ -54,12 +64,27 @@ func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
 			radiant_score           = COALESCE(EXCLUDED.radiant_score,           matches.radiant_score),
 			dire_score              = COALESCE(EXCLUDED.dire_score,              matches.dire_score),
 			first_blood_time        = COALESCE(EXCLUDED.first_blood_time,        matches.first_blood_time),
+			lobby_type              = COALESCE(EXCLUDED.lobby_type,              matches.lobby_type),
+			game_mode               = COALESCE(EXCLUDED.game_mode,               matches.game_mode),
+			cluster                 = COALESCE(EXCLUDED.cluster,                 matches.cluster),
+			region                  = COALESCE(EXCLUDED.region,                  matches.region),
+			skill                   = COALESCE(EXCLUDED.skill,                   matches.skill),
+			engine                  = COALESCE(EXCLUDED.engine,                  matches.engine),
+			human_players           = COALESCE(EXCLUDED.human_players,           matches.human_players),
 			version                 = COALESCE(EXCLUDED.version,                 matches.version),
 			patch_id                = COALESCE(EXCLUDED.patch_id,                matches.patch_id),
 			positive_votes          = COALESCE(EXCLUDED.positive_votes,          matches.positive_votes),
 			negative_votes          = COALESCE(EXCLUDED.negative_votes,          matches.negative_votes),
+			leagueid                = COALESCE(EXCLUDED.leagueid,                matches.leagueid),
+			series_id               = COALESCE(EXCLUDED.series_id,               matches.series_id),
+			series_type             = COALESCE(EXCLUDED.series_type,             matches.series_type),
+			radiant_team_id         = COALESCE(EXCLUDED.radiant_team_id,         matches.radiant_team_id),
+			dire_team_id            = COALESCE(EXCLUDED.dire_team_id,            matches.dire_team_id),
+			radiant_captain         = COALESCE(EXCLUDED.radiant_captain,         matches.radiant_captain),
+			dire_captain            = COALESCE(EXCLUDED.dire_captain,            matches.dire_captain),
 			replay_salt             = COALESCE(EXCLUDED.replay_salt,             matches.replay_salt),
 			replay_url              = COALESCE(EXCLUDED.replay_url,              matches.replay_url),
+			pauses                  = COALESCE(EXCLUDED.pauses,                  matches.pauses),
 			is_parsed               = EXCLUDED.is_parsed OR matches.is_parsed,
 			updated_at              = NOW()`
 	_, err := tx.Exec(ctx, q,
@@ -67,12 +92,12 @@ func upsertMatchTx(ctx context.Context, tx pgx.Tx, m *models.Match) error {
 		m.TowerStatusRadiant, m.TowerStatusDire,
 		m.BarracksStatusRadiant, m.BarracksStatusDire,
 		m.RadiantScore, m.DireScore, m.FirstBloodTime,
-		m.LobbyType, m.GameMode, m.Cluster, m.Engine, m.HumanPlayers,
+		m.LobbyType, m.GameMode, m.Cluster, m.Region, m.Skill, m.Engine, m.HumanPlayers,
 		m.Version, m.PatchID, m.PositiveVotes, m.NegativeVotes,
 		leagueID, m.SeriesID, m.SeriesType,
 		m.RadiantTeamID, m.DireTeamID,
 		m.RadiantCaptain, m.DireCaptain,
-		m.ReplaySalt, m.ReplayURL, m.IsParsed(),
+		m.ReplaySalt, m.ReplayURL, rawOrNil(m.Pauses), m.IsParsed(),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert matches: %w", err)
@@ -129,7 +154,7 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 	constCols := []string{
 		"match_id", "player_slot", "start_time", "account_id",
 		"hero_id", "hero_variant", "is_radiant", "win", "duration",
-		"patch_id", "lobby_type", "game_mode",
+		"patch_id", "lobby_type", "game_mode", "rank_tier",
 		"kills", "deaths", "assists", "level",
 		"net_worth", "gold", "gold_spent", "gold_per_min", "xp_per_min",
 		"last_hits", "denies", "hero_damage", "tower_damage", "hero_healing",
@@ -139,6 +164,8 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 		"stuns", "obs_placed", "sen_placed", "creeps_stacked", "camps_stacked",
 		"rune_pickups", "firstblood_claimed", "teamfight_participation",
 		"towers_killed", "roshans_killed", "observers_placed", "leaver_status",
+		"gold_t", "xp_t", "lh_t", "dn_t", "times",
+		"throw_gold", "comeback_gold", "loss_gold", "win_gold",
 	}
 
 	placeholders := make([]string, len(m.Players))
@@ -146,7 +173,7 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 
 	for i, p := range m.Players {
 		isRadiant := p.PlayerSlot < 128
-		win := m.RadiantWin == isRadiant
+		win := p.Won(m.RadiantWin)
 		base := i * len(constCols)
 
 		// Build placeholders for this row
@@ -160,7 +187,7 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 		args = append(args,
 			m.MatchID, p.PlayerSlot, m.StartTime, p.AccountID,
 			p.HeroID, p.HeroVariant, isRadiant, win, m.Duration,
-			m.PatchID, m.LobbyType, m.GameMode,
+			m.PatchID, m.LobbyType, m.GameMode, p.RankTier,
 			p.Kills, p.Deaths, p.Assists, p.Level,
 			p.NetWorth, p.Gold, p.GoldSpent, p.GoldPerMin, p.XPPerMin,
 			p.LastHits, p.Denies, p.HeroDamage, p.TowerDamage, p.HeroHealing,
@@ -170,6 +197,8 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 			p.Stuns, p.ObsPlaced, p.SenPlaced, p.CreepsStacked, p.CampsStacked,
 			p.RunePickups, intBoolPtr(p.FirstbloodClaimed), p.TeamfightParticipation,
 			p.TowersKilled, p.RoshansKilled, p.ObserversPlaced, p.LeaverStatus,
+			int32SliceJSON(p.GoldT), int32SliceJSON(p.XPT), int32SliceJSON(p.LHT), int32SliceJSON(p.DNT), int32SliceJSON(p.Times),
+			p.ThrowGold, p.ComebackGold, p.LossGold, p.WinGold,
 		)
 	}
 

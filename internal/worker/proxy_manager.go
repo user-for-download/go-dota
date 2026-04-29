@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,9 @@ func NewProxyManager(
 	refreshInterval time.Duration,
 	logger *slog.Logger,
 ) *ProxyManager {
+	if refreshInterval <= 0 {
+		refreshInterval = 15 * time.Minute
+	}
 	return &ProxyManager{
 		redisClient:      redisClient,
 		proxyProviderURL: proxyProviderURL,
@@ -358,12 +362,25 @@ func (pm *ProxyManager) fetchFromProviderWithTransport(ctx context.Context, tran
 }
 
 func isValidProxyScheme(proxyURL string) bool {
-	u, err := url.Parse(proxyURL)
-	if err != nil {
+	if proxyURL == "" {
 		return false
 	}
-	scheme := strings.ToLower(u.Scheme)
-	return scheme == "http" || scheme == "https" || scheme == "socks5" || scheme == "socks4"
+	if strings.Contains(proxyURL, "://") {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			return false
+		}
+		scheme := strings.ToLower(u.Scheme)
+		return scheme == "http" || scheme == "https" || scheme == "socks5"
+	}
+	parts := strings.Split(proxyURL, ":")
+	if len(parts) == 2 {
+		port := parts[1]
+		if _, err := strconv.Atoi(port); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (pm *ProxyManager) parseTextProxies(body []byte) []string {

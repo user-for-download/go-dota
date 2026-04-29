@@ -87,14 +87,14 @@ func TestIsValidProxyScheme(t *testing.T) {
 		{"http", "http://proxy.example.com:8080", true},
 		{"https", "https://proxy.example.com:8080", true},
 		{"socks5", "socks5://proxy.example.com:1080", true},
-		{"socks4", "socks4://proxy.example.com:1080", true},
 		{"uppercase SOCKS5", "SOCKS5://proxy.example.com", true},
+		{"socks4 invalid", "socks4://proxy.example.com:1080", false},
 		{"ftp invalid", "ftp://proxy.example.com", false},
-		{"empty scheme", "proxy.example.com:8080", false},
+		{"ip:port format", "proxy.example.com:8080", true},
+		{"ip:port without port", "proxy.example.com", false},
 		{"empty string", "", false},
 		{"no scheme just host", "http://proxy.example.com", true},
 		{"https without port", "https://proxy.example.com", true},
-		{"socks4a", "socks4://proxy.example.com", true},
 	}
 
 	for _, tc := range tests {
@@ -188,9 +188,9 @@ func TestParseTextProxies(t *testing.T) {
 			want:  []string{"http://good.com", "http://bad", "http://also-good.com"},
 		},
 		{
-			name:  "socks4 added scheme",
+			name:  "socks4 rejected",
 			body:  "socks4://proxy.example.com",
-			want:  []string{"socks4://proxy.example.com"},
+			want:  []string{},
 		},
 	}
 

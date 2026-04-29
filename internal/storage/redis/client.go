@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -20,9 +21,13 @@ func (c *Client) IncrIngestFailure(ctx context.Context, kind, errMsg string, mat
 	pipe := c.rdb.Pipeline()
 	pipe.Incr(ctx, metricsIngestFailedTotal)
 	pipe.HIncrBy(ctx, metricsIngestFailedByKind, kind, 1)
-	sample := fmt.Sprintf(`{"ts":%d,"match_id":%d,"kind":%q,"error":%q}`,
-		time.Now().Unix(), matchID, kind, errMsg)
-	pipe.Set(ctx, metricsLastFailedSample, sample, 24*time.Hour)
+	sampleBytes, _ := json.Marshal(map[string]any{
+		"ts":       time.Now().Unix(),
+		"match_id": matchID,
+		"kind":     kind,
+		"error":    errMsg,
+	})
+	pipe.Set(ctx, metricsLastFailedSample, string(sampleBytes), 24*time.Hour)
 	_, err := pipe.Exec(ctx)
 	return err
 }

@@ -303,23 +303,35 @@ type explorerTeamResponse struct {
 }
 
 func (e *Enricher) enrichTeams(ctx context.Context) error {
-	var wrapper explorerTeamResponse
-	if err := e.fetchJSON(ctx, e.teamsURL, &wrapper); err != nil {
-		return err
+	var rows []odTeam
+
+	if strings.Contains(strings.ToLower(e.teamsURL), "explorer") {
+		var wrapper explorerTeamResponse
+		if err := e.fetchJSON(ctx, e.teamsURL, &wrapper); err != nil {
+			return fmt.Errorf("fetch explorer teams: %w", err)
+		}
+		rows = wrapper.Rows
+	} else {
+		if err := e.fetchJSON(ctx, e.teamsURL, &rows); err != nil {
+			return fmt.Errorf("fetch teams array: %w", err)
+		}
 	}
 
-	refs := make([]postgres.TeamRef, 0, len(wrapper.Rows))
+	refs := make([]postgres.TeamRef, 0, len(rows))
 	withRating := 0
-	for _, t := range wrapper.Rows {
+
+	for _, t := range rows {
 		if t.TeamID == 0 {
 			continue
 		}
+
 		ref := postgres.TeamRef{
 			TeamID:  t.TeamID,
 			Name:    t.Name,
 			Tag:     t.Tag,
 			LogoURL: t.LogoURL,
 		}
+
 		if t.Rating != nil {
 			ref.Rating = *t.Rating
 		}
@@ -332,18 +344,24 @@ func (e *Enricher) enrichTeams(ctx context.Context) error {
 		if t.LastMatchTime != nil {
 			ref.LastMatchTime = *t.LastMatchTime
 		}
+
 		if ref.Rating > 0 || ref.Wins > 0 || ref.Losses > 0 {
 			withRating++
 		}
+
 		refs = append(refs, ref)
 	}
 
 	if err := e.repo.UpsertTeamsBulk(ctx, refs); err != nil {
 		return err
 	}
+
 	e.log.Info("enriched teams",
 		"count", len(refs),
-		"with_rating", withRating)
+		"with_rating", withRating,
+		"source", e.teamsURL,
+	)
+
 	return nil
 }
 

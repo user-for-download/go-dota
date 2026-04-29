@@ -99,12 +99,41 @@ func (c *Client) AddProxies(ctx context.Context, proxies []string) error {
 	if len(proxies) == 0 {
 		return nil
 	}
+
+	existing, err := c.rdb.SMembers(ctx, proxyPoolKey).Result()
+	if err != nil {
+		return fmt.Errorf("read existing proxies: %w", err)
+	}
+
+	next := make(map[string]struct{}, len(proxies))
+	deduped := make([]string, 0, len(proxies))
+	for _, p := range proxies {
+		if p == "" {
+			continue
+		}
+		if _, ok := next[p]; ok {
+			continue
+		}
+		next[p] = struct{}{}
+		deduped = append(deduped, p)
+	}
+	if len(deduped) == 0 {
+		return nil
+	}
+
 	pipe := c.rdb.Pipeline()
 	pipe.Del(ctx, proxyPoolKey)
-	pipe.Del(ctx, proxyRankingKey)
-	for _, p := range proxies {
+	for _, p := range deduped {
 		pipe.SAdd(ctx, proxyPoolKey, p)
 	}
+
+	for _, old := range existing {
+		if _, ok := next[old]; !ok {
+			pipe.ZRem(ctx, proxyRankingKey, old)
+			pipe.Del(ctx, proxyFailureKey(old))
+		}
+	}
+
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("add proxies: %w", err)
 	}

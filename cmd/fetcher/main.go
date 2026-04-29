@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,31 +17,29 @@ import (
 	"github.com/user-for-download/go-dota/internal/worker"
 )
 
-var allowedKeys = []string{"leagues", "players", "teams", "default"}
+
 
 func main() {
-	key := flag.String("key", "default", fmt.Sprintf("Fetch key: %v", allowedKeys))
+	file := flag.String("file", "default.sql", "SQL file path (relative to SQL_DIR)")
 	oneShot := flag.Bool("once", false, "run a single fetch pass and exit")
 	interval := flag.Duration("interval", 24*time.Hour, "fetch interval (ignored with --once)")
 	flag.Parse()
 
-	validKeys := make(map[string]bool)
-	for _, k := range allowedKeys {
-		validKeys[k] = true
-	}
-	if !validKeys[*key] {
-		fmt.Fprintf(os.Stderr, "Invalid --key value. Allowed values: %v\n", allowedKeys)
-		os.Exit(1)
-	}
-
 	log := logger.Init()
-	log.Info("starting fetcher", "key", *key, "once", *oneShot, "interval", *interval)
 
 	cfg, err := config.Load()
 	if err != nil {
 		log.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	sqlPath := filepath.Join(cfg.SQLDir, *file)
+	if _, err := os.Stat(sqlPath); err != nil {
+		log.Error("sql file not found", "path", sqlPath, "error", err)
+		os.Exit(1)
+	}
+
+	log.Info("starting fetcher", "path", sqlPath, "once", *oneShot, "interval", *interval)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -83,7 +81,7 @@ func main() {
 	}
 
 	fetcher := worker.NewFetcher(
-		redisClient, repo, *key, cfg.SQLDir, log,
+		redisClient, repo, sqlPath, log,
 		cfg.MaxQueueSize, cfg.MaxProxyFails,
 	)
 

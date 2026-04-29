@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Partition struct {
@@ -54,24 +56,28 @@ func parsePartitionBounds(expr string) (int64, int64, error) {
 	return from, to, nil
 }
 
+func quoteIdent(name string) string {
+	return pgx.Identifier{name}.Sanitize()
+}
+
 func (r *Repository) CreateMatchPartition(ctx context.Context, name string, fromEpoch, toEpoch int64) error {
 	q := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s
 		PARTITION OF matches
 		FOR VALUES FROM ('%d') TO ('%d')
-	`, name, fromEpoch, toEpoch)
+	`, quoteIdent(name), fromEpoch, toEpoch)
 	_, err := r.pool.Exec(ctx, q)
 	return err
 }
 
 func (r *Repository) DetachMatchPartition(ctx context.Context, name string) error {
-	q := fmt.Sprintf("ALTER TABLE matches DETACH PARTITION %s", name)
+	q := fmt.Sprintf("ALTER TABLE matches DETACH PARTITION %s", quoteIdent(name))
 	_, err := r.pool.Exec(ctx, q)
 	return err
 }
 
 func (r *Repository) DropMatchPartition(ctx context.Context, name string) error {
-	q := fmt.Sprintf("DROP TABLE IF EXISTS %s", name)
+	q := fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdent(name))
 	_, err := r.pool.Exec(ctx, q)
 	return err
 }

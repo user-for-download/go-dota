@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/user-for-download/go-dota/internal/config"
+	"github.com/user-for-download/go-dota/internal/httpx"
 	"github.com/user-for-download/go-dota/internal/logger"
 	"github.com/user-for-download/go-dota/internal/readiness"
 	postgresstore "github.com/user-for-download/go-dota/internal/storage/postgres"
@@ -28,6 +29,9 @@ func main() {
 		log.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	redisstore.SetRawDataTTL(cfg.RawDataTTLSeconds)
+	httpx.SetDefaultMaxPoolSize(cfg.MaxPoolSize)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

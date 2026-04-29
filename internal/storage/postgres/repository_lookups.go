@@ -49,16 +49,16 @@ func (r *Repository) UpsertItems(ctx context.Context, items []ItemRef) error {
 func (r *Repository) upsertItemsChunk(ctx context.Context, items []ItemRef) error {
 	return r.WithTransaction(ctx, func(tx pgx.Tx) error {
 		placeholders := make([]string, len(items))
-		args := make([]interface{}, 0, len(items)*9)
+		args := make([]interface{}, 0, len(items)*8)
 		for i, it := range items {
-			base := i * 9
-			placeholders[i] = fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
-			args = append(args, it.ID, it.Name, it.LocalizedName, it.Cost, it.SecretShop, it.SideShop, it.Recipe, it.Image, nil)
+			base := i * 8
+			placeholders[i] = fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8)
+			args = append(args, it.ID, it.Name, it.LocalizedName, it.Cost, it.SecretShop, it.SideShop, it.Recipe, it.Image)
 		}
 		valuesClause := strings.Join(placeholders, ", ")
 		q := `
-			INSERT INTO items (id, name, localized_name, cost, secret_shop, side_shop, recipe, img, updated_at)
+			INSERT INTO items (id, name, localized_name, cost, secret_shop, side_shop, recipe, img)
 			VALUES ` + valuesClause + `
 			ON CONFLICT (id) DO UPDATE SET
 				name           = COALESCE(NULLIF(EXCLUDED.name, ''),       items.name),

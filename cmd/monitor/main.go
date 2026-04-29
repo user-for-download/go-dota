@@ -233,14 +233,18 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 func (h *handler) calculateRetryMetrics(ctx context.Context) (avg float64, oldestAge int64, err error) {
 	const retryKeyPrefix = "retry_count:"
 	const retryTTL = 86400 // seconds, matches queue.go retryCountTTL
+	const maxRetryKeysToInspect = 1000
 
 	var totalRetry int64
 	var count int64
 	var oldestTTL int64 = -1
 
-	// Use SCAN to find all retry_count:* keys (capped for performance)
 	iter := h.rdb.Scan(ctx, 0, retryKeyPrefix+"*", 100).Iterator()
 	for iter.Next(ctx) {
+		if count >= maxRetryKeysToInspect {
+			break
+		}
+
 		key := iter.Val()
 
 		// Get retry count

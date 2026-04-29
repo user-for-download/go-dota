@@ -29,6 +29,9 @@ type Config struct {
 	// Transport pool
 	MaxPoolSize int `env:"MAX_POOL_SIZE" env-default:"500"`
 
+	// Raw data TTL in seconds (default 2 hours)
+	RawDataTTLSeconds int `env:"RAW_DATA_TTL_SECONDS" env-default:"7200"`
+
 	// Enricher endpoints
 	EnricherHeroesURL     string `env:"ENRICHER_HEROES_URL" env-default:"https://api.opendota.com/api/heroes"`
 	EnricherLeaguesURL    string `env:"ENRICHER_LEAGUES_URL" env-default:"https://api.opendota.com/api/leagues"`

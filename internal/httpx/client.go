@@ -53,10 +53,13 @@ func (c *ProxiedClient) Get(ctx context.Context, targetURL, proxyURL string) (*R
 	}
 	defer resp.Body.Close()
 
-	limitedReader := io.LimitReader(resp.Body, MaxBodySize)
+	limitedReader := io.LimitReader(resp.Body, MaxBodySize+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", err)
+	}
+	if len(body) > MaxBodySize {
+		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("response body exceeds %d bytes", MaxBodySize)
 	}
 	return &Response{Body: body, StatusCode: resp.StatusCode}, nil
 }

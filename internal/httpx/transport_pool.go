@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -14,10 +15,16 @@ type Options struct {
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
 	DialTimeout         time.Duration
-	MaxPoolSize         int // 0 = unlimited
+	MaxPoolSize         int // 0 = default (500), overridden by SetDefaultMaxPoolSize
 }
 
-const defaultMaxPoolSize = 500
+var defaultMaxPoolSize = 500
+
+func SetDefaultMaxPoolSize(size int) {
+	if size > 0 {
+		defaultMaxPoolSize = size
+	}
+}
 
 func DefaultOptions() Options {
 	return Options{
@@ -48,11 +55,6 @@ func NewTransportPool(opts Options) *TransportPool {
 }
 
 func (p *TransportPool) GetOrCreate(proxyURL string) (*http.Transport, error) {
-	parsed, err := url.Parse(proxyURL)
-	if err != nil {
-		return nil, err
-	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -65,16 +67,34 @@ func (p *TransportPool) GetOrCreate(proxyURL string) (*http.Transport, error) {
 		p.evictOldestLocked()
 	}
 
-	t := &http.Transport{
-		Proxy:               http.ProxyURL(parsed),
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		proxyFunc = http.ProxyURL(parsed)
+	}
+
+	t := p.newTransport(proxyFunc)
+	p.transports[proxyURL] = t
+	p.lastUsed[proxyURL] = time.Now()
+	return t, nil
+}
+
+func (p *TransportPool) newTransport(proxyFunc func(*http.Request) (*url.URL, error)) *http.Transport {
+	dialContext := (&net.Dialer{
+		Timeout:   p.opts.DialTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	return &http.Transport{
+		Proxy:               proxyFunc,
+		DialContext:         dialContext,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: p.opts.SkipTLSVerify},
 		MaxIdleConns:        p.opts.MaxIdleConns,
 		MaxIdleConnsPerHost: p.opts.MaxIdleConnsPerHost,
 		IdleConnTimeout:     p.opts.IdleConnTimeout,
 	}
-	p.transports[proxyURL] = t
-	p.lastUsed[proxyURL] = time.Now()
-	return t, nil
 }
 
 func (p *TransportPool) evictOldestLocked() {
@@ -121,4 +141,5 @@ func (p *TransportPool) CloseAll() {
 		t.CloseIdleConnections()
 	}
 	p.transports = make(map[string]*http.Transport)
+	p.lastUsed = make(map[string]time.Time)
 }

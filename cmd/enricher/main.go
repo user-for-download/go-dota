@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/user-for-download/go-dota/internal/config"
+	"github.com/user-for-download/go-dota/internal/httpx"
 	"github.com/user-for-download/go-dota/internal/logger"
 	postgresstore "github.com/user-for-download/go-dota/internal/storage/postgres"
 	redisstore "github.com/user-for-download/go-dota/internal/storage/redis"
@@ -28,6 +29,8 @@ func main() {
 		log.Error("config load", "error", err)
 		os.Exit(1)
 	}
+
+	httpx.SetDefaultMaxPoolSize(cfg.MaxPoolSize)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

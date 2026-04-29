@@ -151,7 +151,8 @@ func upsertTeamMatchTx(
 	tx pgx.Tx,
 	matchID, startTime int64,
 	teamID *int64,
-	radiant, win bool,
+	radiant bool,
+	win *bool,
 	leagueID *int32,
 ) error {
 	if teamID == nil {

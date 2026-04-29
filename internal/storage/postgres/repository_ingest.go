@@ -90,14 +90,19 @@ func (r *Repository) IngestMatch(ctx context.Context, m *models.Match) error {
 			return fmt.Errorf("cosmetics: %w", err)
 		}
 
-		// Team links in team_matches
+// Team links in team_matches
 		if m.RadiantTeamID != nil {
 			if err := upsertTeamMatchTx(ctx, tx, m.MatchID, m.StartTime, m.RadiantTeamID, true, m.RadiantWin, m.LeagueID); err != nil {
 				return fmt.Errorf("radiant_team_match: %w", err)
 			}
 		}
 		if m.DireTeamID != nil {
-			if err := upsertTeamMatchTx(ctx, tx, m.MatchID, m.StartTime, m.DireTeamID, false, !m.RadiantWin, m.LeagueID); err != nil {
+			var direWin *bool
+			if m.RadiantWin != nil {
+				v := !*m.RadiantWin
+				direWin = &v
+			}
+			if err := upsertTeamMatchTx(ctx, tx, m.MatchID, m.StartTime, m.DireTeamID, false, direWin, m.LeagueID); err != nil {
 				return fmt.Errorf("dire_team_match: %w", err)
 			}
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"github.com/jackc/pgx/v5"
 	"io/fs"
 	"log/slog"
 	"sort"
@@ -95,18 +94,20 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			return fmt.Errorf("read migration file %s: %w", name, err)
 		}
 
-		err = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, string(sqlText)); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", name); err != nil {
-				return err
-			}
-			return nil
-		})
-
+		tx, err := conn.Begin(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", name, err)
+			return fmt.Errorf("begin migration tx: %w", err)
+		}
+		if _, err := tx.Exec(ctx, string(sqlText)); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("exec migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", name); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
 	}
 	return nil
