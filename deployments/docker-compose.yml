@@ -30,7 +30,7 @@ services:
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -d pipeline" ]
+      test: [ "CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -78,7 +78,7 @@ services:
       - all
       - go
     restart: unless-stopped
-    command: [ "/bin/enricher", "--interval=24h" ]
+    command: [ "--interval=24h" ]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -180,7 +180,7 @@ services:
       - all
       - go
     restart: unless-stopped
-    command: [ "/bin/partition-manager", "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h" ]
+    command: [ "--ahead=3", "--retention-months=0", "--detach-only=true", "--interval=24h" ]
     depends_on:
       migrate:
         condition: service_completed_successfully

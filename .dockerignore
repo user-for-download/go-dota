@@ -9,3 +9,10 @@ enricher
 .idea
 .env
 bin/
+tmp/
+data/
+dist/
+coverage/
+*.log
+deployments/proxy.json
+.DS_Store
