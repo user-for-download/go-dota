@@ -6,9 +6,9 @@ Dota 2 match data ingestion pipeline. Fetches, collects, parses, and stores matc
 
 | Service | Description |
 |---------|-------------|
-| **fetcher** | Queries OpenDota Explorer SQL to discover new match IDs, dedupes against Postgres/Redis, pushes to fetch_queue. Runs as daemon with configurable interval (default 24h). |
-| **collector** | Consumes fetch_queue, rotates through proxy pool (Lua-scripted rate limiting + failure tracking), fetches raw JSON match data, pushes to parse_queue. |
-| **parser** | Consumes parse_queue, validates JSON, ingests into Postgres using transactions, advisory locks, bulk COPY. Handles retries via DLQ on transient failures. |
+| **fetcher** | Queries OpenDota Explorer SQL to discover new match IDs, dedupes against Postgres/Redis, pushes to fetch stream. Checks queue capacity before pushing. Runs as daemon with configurable interval (default 24h). |
+| **collector** | Consumes fetch stream via consumer groups, rotates through proxy pool (Lua-scripted rate limiting + failure tracking), fetches raw JSON match data (max 10MB), pushes to parse stream. |
+| **parser** | Consumes parse stream via consumer groups, validates JSON, ingests into Postgres using transactions, advisory locks. Transient errors (serialization, deadlock, locked) retry; permanent errors (FK, check, validation) go to DLQ. |
 | **enricher** | Periodically updates static/metadata (heroes, items, leagues, teams, patches) from OpenDota API. Uses Explorer SQL for teams. Blocks downstream services until critical lookups are ready. |
 | **proxy-manager** | Maintains healthy HTTP/SOCKS proxy pool (provider + local file), health-checks against configurable endpoint, updates Redis. |
 | **partition-manager** | Automates PostgreSQL table partitioning for matches table (future partitions + retention). |
@@ -17,11 +17,12 @@ Dota 2 match data ingestion pipeline. Fetches, collects, parses, and stores matc
 
 ## Key Patterns
 
-- **PostgreSQL**: Table partitioning by quarter (`start_time`), JSONB for cold data, COPY protocol for bulk inserts, advisory locks to prevent concurrent match processing.
-- **Redis**: Lua scripts for atomic proxy selection, rate limiting, and DLQ retry logic.
-- **Resilience**: DLQ with retry budget (5min timeout), proxy rotation, jittered backoffs, idempotent ingestion.
+- **PostgreSQL**: Table partitioning by quarter (`start_time`), native arrays (`INTEGER[]`) for timeseries data, advisory locks to prevent concurrent match processing.
+- **Redis**: Streams with consumer groups for at-least-once delivery, Lua scripts for atomic proxy selection, rate limiting, and DLQ retry logic.
+- **Resilience**: DLQ with retry budget (5min timeout), proxy rotation, exponential backoffs, idempotent ingestion. Transient errors (serialization, deadlock, locked, other) retry; permanent errors (FK, check, not-null, unique, validation) go to DLQ.
 - **Enricher Bootstrap Gate**: Critical enricher steps (patches, heroes, items, game_modes, lobby_types, leagues) must succeed before `enricher:bootstrapped` marker is set. Teams are soft and don't block.
 - **FK Retry**: Missing lookup IDs (new teams/heroes/leagues appearing mid-cycle) cause FK violations that retry automatically after next enricher pass.
+- **Queue Protection**: Fetcher checks stream length before pushing; payloads over 10MB are rejected to prevent Redis memory exhaustion.
 
 ## Quick Start
 
@@ -75,7 +76,8 @@ The `/metrics` endpoint exposes:
 - `ingest_success_total` - successful match ingests
 - `ingest_failed_total` - failed ingests
 - `parse_failed_total` - parse-side failures (unmarshal/validation)
-- `ingest_failed_by_kind` - failures categorized: `fk_violation`, `match_locked`, `validation`, `unmarshal`, etc.
+- `ingest_failed_by_kind` - failures categorized: `fk_violation`, `check_violation`, `not_null_violation`, `unique_violation`, `serialization`, `deadlock`, `match_locked`, `validation`, `unmarshal`, `other`, etc.
 - `last_failed_sample` - JSON sample of most recent failure
+- Queue depths: `redis_fetch_stream_len`, `redis_parse_stream_len`, `fetch_dlq_len`, `parse_dlq_len`
 
 See `ARCHITECTURE.md` for full details.

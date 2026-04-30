@@ -91,6 +91,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       ENRICHER_TEAMS_URL: ${ENRICHER_TEAMS_URL:-}
+      ENRICHER_PRO_PLAYERS_URL: ${ENRICHER_PRO_PLAYERS_URL:-https://api.opendota.com/api/proPlayers}
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
 
   collector:

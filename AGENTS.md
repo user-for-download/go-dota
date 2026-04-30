@@ -8,9 +8,10 @@
   - `readiness` – dependency probes (Postgres, Redis, ProxyPool, SchemaApplied)
   - `httpx` – proxy‑aware HTTP client with connection pooling
   - `models` – typed DTOs matching the OpenDota API (Match, Player, etc.)
+  - `pipeline` – stream names and consumer group constants
   - `storage`
     - `postgres` – repository layer (pgxpool, migrations, partitioned queries)
-    - `redis` – Lua‑scripted proxy pool, queues, rate limiting
+    - `redis` – Redis Streams, Lua‑scripted proxy pool, queues, rate limiting
   - `worker` – service logic (collector, fetcher, parser, enricher, etc.)
 - `deployments/` – Dockerfiles, docker‑compose, SQL query files, proxy sample
 - `testdata/` – test fixtures
@@ -31,6 +32,7 @@ To run locally without Docker, start Redis + PostgreSQL, then launch each servic
 - **Migrations**: Handled by dedicated `migrate` service (one-shot, not run on every service startup). Use session-level `SET lock_timeout = '60s'` (not `SET LOCAL`, as there's no transaction). Reset with `SET lock_timeout = DEFAULT` before returning connection to pool.
 - **Redis scripts**: Complex atomic operations (proxy selection, rate limiting, requeue) are implemented as Redis Lua scripts stored in the `redis` package and executed via `goredis.Script`.
 - **Models**: The `Match` struct uses pointer fields for nullable API values, `json.RawMessage` for cold JSONB, and typed enums (e.g., `PlayerSlot`). Validate before ingestion.
+- **Payload Storage**: Raw match JSON (max 10MB) is stored in Redis with TTL. Use `PayloadStore` interface in `internal/worker/payload_store.go`.
 
 ## Working with this Codebase
 1. **Adding a new service**: Create a `cmd/<name>/main.go` that loads config, clients, runs `readiness.WaitAll()` for dependencies, and starts a worker loop. Implement the worker logic in `internal/worker/<name>.go`. Add a Dockerfile and service entry in `docker‑compose.yml`.
@@ -39,7 +41,7 @@ To run locally without Docker, start Redis + PostgreSQL, then launch each servic
    - Update the matching upsert queries in `internal/storage/postgres/repository_*.go`.
    - If adding a new table, create a migration in `internal/storage/postgres/migrations/` (prefix with a sequence number).
    - When modifying existing tables, write idempotent migration SQL (e.g., `ALTER TABLE ... DROP CONSTRAINT IF EXISTS`). Never use CHECK constraints on API-derived columns (OpenDota tier values have expanded beyond the original enum).
-3. **Adding a new queue**: Define the Redis keys in `internal/storage/redis/queue.go`, add relevant push/pop methods, and wire them into workers. Use atomic Lua scripts for consistency where needed.
+3. **Adding a new queue**: Define the Redis stream keys in `internal/pipeline/`, add relevant stream methods in `internal/storage/redis/`, and wire them into workers using consumer groups. Use atomic Lua scripts for consistency where needed. Always check queue capacity before pushing to prevent Redis memory exhaustion.
 4. **Testing**: Currently limited. When adding tests, place them next to the package under test (e.g., `internal/worker/collector_test.go`). Use `testcontainers‑go` for integration tests with real Redis/Postgres.
 5. **Configuration**: All tunables come from environment variables. Never hard‑code hostnames, ports, or credentials. The `config.Config` struct is the single source of truth.
 

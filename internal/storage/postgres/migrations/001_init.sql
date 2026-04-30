@@ -105,13 +105,20 @@ CREATE TABLE IF NOT EXISTS items (
 -- Abilities
 -- =====================================================
 CREATE TABLE IF NOT EXISTS abilities (
-                                         id              INTEGER PRIMARY KEY,
-                                         name            TEXT NOT NULL,
-                                         localized_name  TEXT,
-                                         description     TEXT,
-                                         img             TEXT
-);
+                                         id             INTEGER PRIMARY KEY,
+                                         key            TEXT NOT NULL UNIQUE,
+                                         dname          TEXT NOT NULL DEFAULT '',
+                                         behavior       JSONB,
+                                         target_team    TEXT NOT NULL DEFAULT '',
+                                         description    TEXT NOT NULL DEFAULT '',
+                                         img            TEXT NOT NULL DEFAULT '',
+                                         mana_cost      TEXT NOT NULL DEFAULT '',
+                                         cooldown       TEXT NOT NULL DEFAULT '',
+                                         attrib         JSONB,
+                                         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
+CREATE INDEX IF NOT EXISTS idx_abilities_dname ON abilities (dname);
 -- =====================================================
 -- Patches
 -- =====================================================

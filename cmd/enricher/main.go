@@ -67,6 +67,7 @@ func main() {
 		GameModesURL:   cfg.EnricherGameModesURL,
 		LobbyTypesURL:  cfg.EnricherLobbyTypesURL,
 		PatchesURL:     cfg.EnricherPatchesURL,
+		ProPlayersURL:  cfg.EnricherProPlayersURL,
 		SkipTLSVerify:  cfg.SkipTLSVerify,
 	}
 

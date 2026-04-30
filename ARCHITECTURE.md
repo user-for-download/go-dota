@@ -1,11 +1,11 @@
-1. **Fetcher** queries the OpenDota Explorer SQL, deduplicates against PostgreSQL/Redis, pushes IDs to `fetch_queue`. Runs as daemon with configurable interval (default 24h).
-2. **Collector** workers pull from `fetch_queue`, fetch match JSON via rotating proxy pool, push to `parse_queue`. Tracks network/rate-limit attempts separately for retry budget.
-3. **Parser** deserialises, validates, ingests into PostgreSQL using partitioned tables + advisory locks. On transient lock conflicts, retries via DLQ with 5-minute budget.
+1. **Fetcher** queries the OpenDota Explorer SQL, deduplicates against PostgreSQL/Redis, pushes IDs to `fetch_tasks` stream. Checks queue capacity before pushing to prevent Redis memory exhaustion. Runs as daemon with configurable interval (default 24h).
+2. **Collector** workers consume from `fetch_tasks` stream via Redis consumer groups, fetch match JSON (max 10MB) via rotating proxy pool, push to `parse_tasks` stream. Tracks network/rate-limit attempts separately for retry budget. Uses leased proxy pattern with automatic release on context cancellation.
+3. **Parser** consumes from `parse_tasks` stream via consumer groups, deserialises, validates, ingests into PostgreSQL using partitioned tables + advisory locks. Transient errors (serialization failure, deadlock, advisory lock conflict, other) retry via DLQ with 5-minute budget. Permanent errors (FK violation, check violation, not-null, unique, validation) go directly to DLQ.
 4. **Enricher** periodically syncs lookup data (heroes, items, patches, leagues, teams) from OpenDota API.
-5. **Partition Manager** creates future quarterly partitions and optionally detaches/drops old data.
+5. **Partition Manager** creates future quarterly partitions aligned to quarter boundaries and optionally detaches/drops old data.
 6. **Proxy Manager** maintains healthy proxy pool in Redis, health-checks against configurable endpoint.
 7. **Migrate** is a one-shot service that runs pending schema migrations on startup.
-8. **Monitor** exposes `/health` and `/metrics` (queue depths, DLQ age, retry stats).
+8. **Monitor** exposes `/health` and `/metrics` (queue depths, DLQ age, retry stats, ingest success/failure by kind).
 
 ## Component Map
 | Service              | Entrypoint           | Role                                                      |
@@ -39,11 +39,11 @@ This ensures services don't crash on startup if dependencies aren't ready—they
 ## Key Design Decisions
 
 ### 1. Queue‑Driven, At‑Least‑Once Processing
-Each step uses Redis lists (`fetch_queue`, `parse_queue`) with idempotent downstream operations:
-- Fetcher marks discovered IDs in a Redis seen‑set to avoid re‑push.
-- Collector atomically stores raw data and queues the task ID. Tracks `network_attempts` and `rate_limit_retries` separately for independent budget checking.
+Each step uses Redis Streams (`fetch_tasks`, `parse_tasks`) with consumer groups for scalable parallel processing:
+- Fetcher marks discovered IDs in a Redis seen‑set to avoid re‑push. Checks stream length against `MAX_QUEUE_SIZE` before pushing to prevent Redis memory exhaustion.
+- Collector atomically stores raw data (max 10MB) and queues the task ID. Uses leased proxy pattern with defer-release to prevent leaks on panic. Tracks `network_attempts` and `rate_limit_retries` separately for independent budget checking.
 - Parser uses `ON CONFLICT DO UPDATE` and advisory locks (`pg_try_advisory_xact_lock`) to make re‑ingestion safe.
-- **Dead Letter Queue**: Failed parse tasks go to `failed_queue` with retry metadata. Parser tracks per-task budget (5-minute total timeout). Metrics exposed: `parser_retry_count_avg`, `dlq_oldest_age_seconds`, `ingest_failed_by_kind`.
+- **Dead Letter Queue**: Failed parse tasks go to `failed_queue` with retry metadata. Transient errors (serialization, deadlock, locked, other) retry; permanent errors (FK, check, not-null, unique, validation) go to DLQ. Parser tracks per-task budget (5-minute total timeout). Metrics exposed: `parser_retry_count_avg`, `dlq_oldest_age_seconds`, `ingest_failed_by_kind`.
 
 ### 2. Enricher Bootstrap Gate
 The **enricher** populates lookup tables before parser runs:
@@ -52,11 +52,11 @@ The **enricher** populates lookup tables before parser runs:
 - Parser/Fetcher wait on the bootstrap marker via `readiness.EnricherBootstrapped()`.
 - This eliminates the need for stub inserts in the ingest path.
 
-### 3. FK Violation Handling
-FK violations (23503) are **transient**, not permanent:
-- Missing teams/heroes/leagues/patches cause retryable FK errors.
-- Failed tasks go to `failed_queue` and retry after next enricher pass.
-- Only check violations (23514) and not-null violations (23502) are permanent failures.
+### 3. Error Classification & Retry Logic
+Errors are classified by PostgreSQL error code:
+- **Retry (transient)**: `serialization_failure` (40001), `deadlock` (40P01), advisory lock conflict, network/connection errors (`IngestErrOther`).
+- **DLQ (permanent)**: FK violation (23503), check violation (23514), not-null violation (23502), unique violation (23505), validation failure, unmarshal failure.
+- Missing teams/heroes/leagues/patches cause FK errors; tasks retry after next enricher pass.
 
 ### 4. Proxy Rotation & Rate Limiting
 The **collector** uses a weighted random proxy selection implemented as a Redis Lua script.  
@@ -81,7 +81,7 @@ Metrics track failures by kind (`unmarshal`, `validation`, `fk_violation`, `matc
 
 ## Database Schema Overview
 - **`matches`** – core match metadata, partitioned by `start_time` (quarterly).
-- **`player_matches`** – one row per player per match (hot path, columns for dashboards).
+- **`player_matches`** – one row per player per match (hot path, columns for dashboards). Timeseries columns (`gold_t`, `xp_t`, `lh_t`, `dn_t`, `times`) use native PostgreSQL `INTEGER[]` arrays.
 - **`player_match_details`** – JSONB blobs with cold analytics (damage, wards, etc.).
 - **`match_objectives`, `match_chat`, `match_teamfights`** – event tables.
 - **`player_timeseries`** – per‑minute gold/xp/LH/DN for parsed matches.
@@ -107,3 +107,5 @@ The `monitor` service exposes a simple HTTP endpoint for liveness and metrics.
 - Use a reference‑counted transport pool to avoid closing connections in use.
 - Add DLQ for fetch tasks (collector failures) to match parser DLQ.
 - Implement per‑quarter partition retention policies.
+- Add structured tracing / correlation IDs for distributed debugging.
+- Add unit tests for critical paths (models validation, timeseries building).

@@ -29,6 +29,7 @@ type Enricher struct {
 	gameModesURL  string
 	lobbyTypesURL string
 	patchesURL    string
+	proPlayersURL string
 }
 
 type EnricherConfig struct {
@@ -39,6 +40,7 @@ type EnricherConfig struct {
 	GameModesURL   string
 	LobbyTypesURL  string
 	PatchesURL     string
+	ProPlayersURL  string
 	SkipTLSVerify  bool
 }
 
@@ -63,6 +65,7 @@ func NewEnricher(
 		gameModesURL:  cfg.GameModesURL,
 		lobbyTypesURL: cfg.LobbyTypesURL,
 		patchesURL:    cfg.PatchesURL,
+		proPlayersURL: cfg.ProPlayersURL,
 	}
 }
 
@@ -83,6 +86,7 @@ func (e *Enricher) Run(ctx context.Context) error {
 		fn   func(context.Context) error
 	}{
 		{"teams", e.enrichTeams},
+		{"pro_players", e.enrichProPlayers},
 	}
 
 	var criticalErrs, softErrs []error
@@ -493,3 +497,132 @@ func (e *Enricher) enrichPatches(ctx context.Context) error {
 	e.log.Info("enriched patches", "count", len(refs))
 	return nil
 }
+
+type odProPlayer struct {
+	AccountID       int64      `json:"account_id"`
+	SteamID         *string    `json:"steamid"`
+	Avatar          *string    `json:"avatar"`
+	AvatarMedium    *string    `json:"avatarmedium"`
+	AvatarFull      *string    `json:"avatarfull"`
+	ProfileURL      *string    `json:"profileurl"`
+	Personaname     *string    `json:"personaname"`
+	LastLogin       *time.Time `json:"last_login"`
+	FullHistoryTime *time.Time `json:"full_history_time"`
+	Cheese          *int       `json:"cheese"`
+	FhUnavailable   *bool      `json:"fh_unavailable"`
+	LocCountryCode  *string    `json:"loccountrycode"`
+	LastMatchTime   *time.Time `json:"last_match_time"`
+	Plus            *bool      `json:"plus"`
+	ProfileTime     *time.Time `json:"profile_time"`
+	RankTierTime    *time.Time `json:"rank_tier_time"`
+
+	Name        *string `json:"name"`
+	CountryCode *string `json:"country_code"`
+	FantasyRole *int16  `json:"fantasy_role"`
+	TeamID      *int64  `json:"team_id"`
+	TeamName    *string `json:"team_name"`
+	TeamTag     *string `json:"team_tag"`
+	IsLocked    *bool   `json:"is_locked"`
+	IsPro       *bool   `json:"is_pro"`
+	LockedUntil *int64  `json:"locked_until"`
+}
+
+func (e *Enricher) enrichProPlayers(ctx context.Context) error {
+	if e.proPlayersURL == "" {
+		e.log.Warn("pro_players URL not configured, skipping")
+		return nil
+	}
+
+	var pros []odProPlayer
+	if err := e.fetchJSON(ctx, e.proPlayersURL, &pros); err != nil {
+		return fmt.Errorf("fetch pro players: %w", err)
+	}
+
+	teamSeen := make(map[int64]struct{}, len(pros))
+	teamStubs := make([]postgres.TeamRef, 0, len(pros))
+	for _, p := range pros {
+		if p.TeamID == nil || *p.TeamID <= 0 {
+			continue
+		}
+		if _, ok := teamSeen[*p.TeamID]; ok {
+			continue
+		}
+		teamSeen[*p.TeamID] = struct{}{}
+		teamStubs = append(teamStubs, postgres.TeamRef{
+			TeamID:  *p.TeamID,
+			Name:    strDeref(p.TeamName),
+			Tag:     strDeref(p.TeamTag),
+			LogoURL: "",
+		})
+	}
+	if len(teamStubs) > 0 {
+		if err := e.repo.UpsertTeamsBulk(ctx, teamStubs); err != nil {
+			return fmt.Errorf("upsert team stubs: %w", err)
+		}
+	}
+
+	players := make([]postgres.PlayerRef, 0, len(pros))
+	notable := make([]postgres.NotablePlayerRef, 0, len(pros))
+
+	for _, p := range pros {
+		if p.AccountID == 0 {
+			continue
+		}
+
+		players = append(players, postgres.PlayerRef{
+			AccountID:       p.AccountID,
+			SteamID:         strDeref(p.SteamID),
+			Personaname:     strDeref(p.Personaname),
+			Avatar:          strDeref(p.Avatar),
+			AvatarMedium:    strDeref(p.AvatarMedium),
+			AvatarFull:      strDeref(p.AvatarFull),
+			ProfileURL:      strDeref(p.ProfileURL),
+			LocCountryCode:  strDeref(p.LocCountryCode),
+			Plus:            boolDeref(p.Plus),
+			Cheese:          intDeref(p.Cheese),
+			FhUnavailable:   boolDeref(p.FhUnavailable),
+			LastLogin:       p.LastLogin,
+			LastMatchTime:   p.LastMatchTime,
+			FullHistoryTime: p.FullHistoryTime,
+			ProfileTime:     p.ProfileTime,
+			RankTierTime:    p.RankTierTime,
+		})
+
+		var teamID *int64
+		if p.TeamID != nil && *p.TeamID > 0 {
+			teamID = p.TeamID
+		}
+
+		notable = append(notable, postgres.NotablePlayerRef{
+			AccountID:   p.AccountID,
+			Name:        strDeref(p.Name),
+			CountryCode: strDeref(p.CountryCode),
+			FantasyRole: int16Deref(p.FantasyRole),
+			TeamID:      teamID,
+			TeamName:    strDeref(p.TeamName),
+			TeamTag:     strDeref(p.TeamTag),
+			IsPro:       boolDeref(p.IsPro),
+			IsLocked:    boolDeref(p.IsLocked),
+			LockedUntil: p.LockedUntil,
+		})
+	}
+
+	if err := e.repo.UpsertPlayers(ctx, players); err != nil {
+		return fmt.Errorf("upsert players: %w", err)
+	}
+	if err := e.repo.UpsertNotablePlayers(ctx, notable); err != nil {
+		return fmt.Errorf("upsert notable_players: %w", err)
+	}
+
+	e.log.Info("enriched pro players",
+		"players", len(players),
+		"notable", len(notable),
+		"team_stubs", len(teamStubs),
+	)
+	return nil
+}
+
+func strDeref(s *string) string  { if s == nil { return "" }; return *s }
+func boolDeref(b *bool) bool     { if b == nil { return false }; return *b }
+func intDeref(i *int) int        { if i == nil { return 0 }; return *i }
+func int16Deref(i *int16) int16  { if i == nil { return 0 }; return *i }

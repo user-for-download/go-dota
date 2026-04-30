@@ -47,6 +47,7 @@ type Config struct {
 	EnricherGameModesURL  string `env:"ENRICHER_GAME_MODES_URL" env-default:"https://api.opendota.com/api/constants/game_mode"`
 	EnricherLobbyTypesURL string `env:"ENRICHER_LOBBY_TYPES_URL" env-default:"https://api.opendota.com/api/constants/lobby_type"`
 	EnricherPatchesURL    string `env:"ENRICHER_PATCHES_URL" env-default:"https://api.opendota.com/api/constants/patch"`
+	EnricherProPlayersURL string `env:"ENRICHER_PRO_PLAYERS_URL" env-default:"https://api.opendota.com/api/proPlayers"`
 }
 
 func Load() (*Config, error) {
