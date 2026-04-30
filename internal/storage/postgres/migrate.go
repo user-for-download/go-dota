@@ -2,32 +2,27 @@ package postgres
 
 import (
 	"context"
-	"embed"
 	"fmt"
-	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
-
 const migrationAdvisoryLockID int64 = 727274
 
-// Migrate runs all embedded SQL migrations in order.
-//
-// Design decisions:
-//   - Uses blocking pg_advisory_lock to ensure only one instance applies migrations.
-//     This prevents race conditions where two instances both see "no migrations applied"
-//     and try to apply the same migration simultaneously.
-//   - Lock is automatically released when the connection is dropped (client disconnect).
-//   - Each migration runs inside a transaction; if it fails, the transaction is rolled back
-//     and the error is propagated.
-//   - Migrations are idempotent: a migration is skipped if its version already exists
-//     in schema_migrations table.
+var MigrationsDir = "/app/migrations"
+
+func init() {
+	if v := os.Getenv("MIGRATIONS_DIR"); v != "" {
+		MigrationsDir = v
+	}
+}
+
 func (r *Repository) Migrate(ctx context.Context) error {
 	log := slog.Default()
+	log.Info("running migrations", "dir", MigrationsDir)
 
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
@@ -35,8 +30,6 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	}
 	defer conn.Release()
 
-	// Ensure we can lock. Set session-level lock timeout (not LOCAL, as we aren't in a tx)
-	// and reset it before the connection is returned to the pool.
 	if _, err := conn.Exec(ctx, "SET lock_timeout = '60s'"); err != nil {
 		return fmt.Errorf("set lock timeout: %w", err)
 	}
@@ -51,7 +44,6 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockID)
 	}()
 
-	// 1. Create migration table
 	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     TEXT PRIMARY KEY,
@@ -60,12 +52,10 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		return fmt.Errorf("create schema_migrations table: %w", err)
 	}
 
-	// 2. Read embedded files
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	entries, err := os.ReadDir(MigrationsDir)
 	if err != nil {
-		return fmt.Errorf("read embedded migrations dir: %w", err)
+		return fmt.Errorf("read migrations dir %q: %w", MigrationsDir, err)
 	}
-	log.Info("discovered migrations", "count", len(entries))
 
 	var files []string
 	for _, e := range entries {
@@ -73,25 +63,27 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			files = append(files, e.Name())
 		}
 	}
-
 	if len(files) == 0 {
-		return fmt.Errorf("no .sql files found in embedded migrations directory")
+		return fmt.Errorf("no .sql files found in %q", MigrationsDir)
 	}
 	sort.Strings(files)
+	log.Info("discovered migrations", "count", len(files))
 
-	// 3. Apply
 	for _, name := range files {
 		var exists bool
-		_ = conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", name).Scan(&exists)
-
+		_ = conn.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)",
+			name,
+		).Scan(&exists)
 		if exists {
 			continue
 		}
 
 		log.Info("applying migration", "file", name)
-		sqlText, err := migrationsFS.ReadFile("migrations/" + name)
+		path := filepath.Join(MigrationsDir, name)
+		sqlText, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("read migration file %s: %w", name, err)
+			return fmt.Errorf("read migration file %s: %w", path, err)
 		}
 
 		tx, err := conn.Begin(ctx)
@@ -102,7 +94,9 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("exec migration %s: %w", name, err)
 		}
-		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", name); err != nil {
+		if _, err := tx.Exec(ctx,
+			"INSERT INTO schema_migrations (version) VALUES ($1)", name,
+		); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}

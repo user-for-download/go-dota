@@ -68,6 +68,9 @@ func main() {
 		LobbyTypesURL:  cfg.EnricherLobbyTypesURL,
 		PatchesURL:     cfg.EnricherPatchesURL,
 		ProPlayersURL:  cfg.EnricherProPlayersURL,
+		AbilitiesURL:   cfg.EnricherAbilitiesURL,
+		AbilityIDsURL:  cfg.EnricherAbilityIDsURL,
+		HeroStatsURL:   cfg.EnricherHeroStatsURL,
 		SkipTLSVerify:  cfg.SkipTLSVerify,
 	}
 

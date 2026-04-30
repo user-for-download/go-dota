@@ -48,6 +48,11 @@ type Config struct {
 	EnricherLobbyTypesURL string `env:"ENRICHER_LOBBY_TYPES_URL" env-default:"https://api.opendota.com/api/constants/lobby_type"`
 	EnricherPatchesURL    string `env:"ENRICHER_PATCHES_URL" env-default:"https://api.opendota.com/api/constants/patch"`
 	EnricherProPlayersURL string `env:"ENRICHER_PRO_PLAYERS_URL" env-default:"https://api.opendota.com/api/proPlayers"`
+	EnricherAbilitiesURL  string `env:"ENRICHER_ABILITIES_URL" env-default:"https://raw.githubusercontent.com/odota/dotaconstants/refs/heads/master/build/abilities.json"`
+	EnricherAbilityIDsURL string `env:"ENRICHER_ABILITY_IDS_URL" env-default:"https://raw.githubusercontent.com/odota/dotaconstants/refs/heads/master/build/ability_ids.json"`
+	EnricherHeroStatsURL  string `env:"ENRICHER_HERO_STATS_URL" env-default:"https://api.opendota.com/api/heroStats"`
+
+	MigrationsDir string `env:"MIGRATIONS_DIR" env-default:"/app/migrations"`
 }
 
 func Load() (*Config, error) {

@@ -46,7 +46,10 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      MIGRATIONS_DIR: /app/migrations
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable
+    volumes:
+      - ./migrations:/app/migrations:ro
 
   proxy-manager:
     image: deployments-proxy-manager:latest
@@ -126,9 +129,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      MIGRATIONS_DIR: /app/migrations
       REDIS_URL: redis://redis:6379/0
       POSTGRES_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pipeline}?sslmode=disable&pool_max_conns=20
       PARSER_WORKERS: "5"
+    volumes:
+      - ./migrations:/app/migrations:ro
 
   fetcher:
     image: deployments-fetcher:latest

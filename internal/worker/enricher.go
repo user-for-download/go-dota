@@ -22,14 +22,17 @@ type Enricher struct {
 	log   *slog.Logger
 	http  *httpx.ProxiedClient
 
-	heroesURL     string
-	leaguesURL    string
-	teamsURL      string
-	itemsURL      string
-	gameModesURL  string
-	lobbyTypesURL string
-	patchesURL    string
-	proPlayersURL string
+	heroesURL      string
+	leaguesURL     string
+	teamsURL       string
+	itemsURL       string
+	gameModesURL   string
+	lobbyTypesURL  string
+	patchesURL     string
+	proPlayersURL  string
+	abilitiesURL   string
+	abilityIDsURL  string
+	heroStatsURL   string
 }
 
 type EnricherConfig struct {
@@ -41,6 +44,9 @@ type EnricherConfig struct {
 	LobbyTypesURL  string
 	PatchesURL     string
 	ProPlayersURL  string
+	AbilitiesURL   string
+	AbilityIDsURL  string
+	HeroStatsURL   string
 	SkipTLSVerify  bool
 }
 
@@ -58,14 +64,17 @@ func NewEnricher(
 		repo:          repo,
 		log:           log,
 		http:          httpx.NewProxiedClient(pool, 30*time.Second),
-		heroesURL:     cfg.HeroesURL,
-		leaguesURL:    cfg.LeaguesURL,
-		teamsURL:      cfg.TeamsURL,
-		itemsURL:      cfg.ItemsURL,
-		gameModesURL:  cfg.GameModesURL,
-		lobbyTypesURL: cfg.LobbyTypesURL,
-		patchesURL:    cfg.PatchesURL,
-		proPlayersURL: cfg.ProPlayersURL,
+		heroesURL:      cfg.HeroesURL,
+		leaguesURL:     cfg.LeaguesURL,
+		teamsURL:       cfg.TeamsURL,
+		itemsURL:       cfg.ItemsURL,
+		gameModesURL:   cfg.GameModesURL,
+		lobbyTypesURL:  cfg.LobbyTypesURL,
+		patchesURL:     cfg.PatchesURL,
+		proPlayersURL:  cfg.ProPlayersURL,
+		abilitiesURL:   cfg.AbilitiesURL,
+		abilityIDsURL:  cfg.AbilityIDsURL,
+		heroStatsURL:   cfg.HeroStatsURL,
 	}
 }
 
@@ -76,6 +85,8 @@ func (e *Enricher) Run(ctx context.Context) error {
 	}{
 		{"patches", e.enrichPatches},
 		{"heroes", e.enrichHeroes},
+		{"hero_stats", e.enrichHeroStats},
+		{"abilities", e.enrichAbilities},
 		{"items", e.enrichItems},
 		{"game_modes", e.enrichGameModes},
 		{"lobby_types", e.enrichLobbyTypes},
@@ -626,3 +637,242 @@ func strDeref(s *string) string  { if s == nil { return "" }; return *s }
 func boolDeref(b *bool) bool     { if b == nil { return false }; return *b }
 func intDeref(i *int) int        { if i == nil { return 0 }; return *i }
 func int16Deref(i *int16) int16  { if i == nil { return 0 }; return *i }
+
+type odAbility struct {
+	DName       string          `json:"dname"`
+	Behavior    json.RawMessage `json:"behavior"`
+	TargetTeam  json.RawMessage `json:"target_team"`
+	Description string          `json:"desc"`
+	Img         string          `json:"img"`
+	ManaCost    json.RawMessage `json:"mc"`
+	Cooldown    json.RawMessage `json:"cd"`
+	Attrib      json.RawMessage `json:"attrib"`
+}
+
+func (e *Enricher) enrichAbilities(ctx context.Context) error {
+	var raw map[string]odAbility
+	if err := e.fetchJSON(ctx, e.abilitiesURL, &raw); err != nil {
+		return fmt.Errorf("fetch abilities: %w", err)
+	}
+
+	keyToID := make(map[string]int)
+	if e.abilityIDsURL != "" {
+		var idsByID map[string]string
+		if err := e.fetchJSON(ctx, e.abilityIDsURL, &idsByID); err != nil {
+			e.log.Warn("fetch ability_ids failed; continuing without ids", "error", err)
+		} else {
+			for idStr, key := range idsByID {
+				if strings.Contains(idStr, ",") {
+					continue
+				}
+				var id int
+				if _, err := fmt.Sscanf(idStr, "%d", &id); err == nil && id > 0 {
+					keyToID[key] = id
+				}
+			}
+		}
+	}
+
+	refs := make([]postgres.AbilityRef, 0, len(raw))
+	for key, a := range raw {
+		if key == "special_bonus_attributes" ||
+			strings.HasPrefix(key, "dota_base") ||
+			strings.HasPrefix(key, "dota_empty") {
+			continue
+		}
+
+		isTalent := strings.HasPrefix(key, "special_bonus_")
+		if isTalent && a.DName == "" {
+			continue
+		}
+
+		behaviorJSON := normalizeStringOrArray(a.Behavior)
+		targetTeamStr := normalizeTargetTeam(a.TargetTeam)
+
+		ref := postgres.AbilityRef{
+			Key:         key,
+			DName:       a.DName,
+			Behavior:    behaviorJSON,
+			TargetTeam:  targetTeamStr,
+			Description: a.Description,
+			Img:         a.Img,
+			ManaCost:    flattenScalar(a.ManaCost),
+			Cooldown:    flattenScalar(a.Cooldown),
+			Attrib:      a.Attrib,
+			IsTalent:    isTalent,
+		}
+		if id, ok := keyToID[key]; ok {
+			ref.ID = &id
+		}
+		refs = append(refs, ref)
+	}
+
+	if err := e.repo.UpsertAbilities(ctx, refs); err != nil {
+		return err
+	}
+
+	talentCount, abilityCount := 0, 0
+	for _, r := range refs {
+		if r.IsTalent {
+			talentCount++
+		} else {
+			abilityCount++
+		}
+	}
+
+	e.log.Info("enriched abilities",
+		"total", len(refs),
+		"abilities", abilityCount,
+		"talents", talentCount,
+		"with_ids", countAbilityIDs(refs),
+	)
+	return nil
+}
+
+func normalizeStringOrArray(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		out, _ := json.Marshal(arr)
+		return out
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		out, _ := json.Marshal([]string{s})
+		return out
+	}
+	return raw
+}
+
+func flattenScalar(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return strings.Trim(string(raw), `"`)
+}
+
+func normalizeTargetTeam(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return strings.Join(arr, ", ")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return strings.Trim(string(raw), `"`)
+}
+
+func countAbilityIDs(refs []postgres.AbilityRef) int {
+	n := 0
+	for _, r := range refs {
+		if r.ID != nil {
+			n++
+		}
+	}
+	return n
+}
+
+type odHeroStats struct {
+	ID              int16   `json:"id"`
+	BaseHealth      int     `json:"base_health"`
+	BaseMana        int     `json:"base_mana"`
+	BaseArmor       float32 `json:"base_armor"`
+	BaseMR          float32 `json:"base_mr"`
+	BaseAttackMin   int16   `json:"base_attack_min"`
+	BaseAttackMax   int16   `json:"base_attack_max"`
+	BaseStr         int16   `json:"base_str"`
+	BaseAgi         int16   `json:"base_agi"`
+	BaseInt         int16   `json:"base_int"`
+	StrGain         float32 `json:"str_gain"`
+	AgiGain         float32 `json:"agi_gain"`
+	IntGain         float32 `json:"int_gain"`
+	AttackRange     int16   `json:"attack_range"`
+	ProjectileSpeed int16   `json:"projectile_speed"`
+	AttackRate      float32 `json:"attack_rate"`
+	MoveSpeed       int16   `json:"move_speed"`
+	TurnRate        *float32 `json:"turn_rate"`
+	CMEnabled       bool    `json:"cm_enabled"`
+
+	TurboPicks int `json:"turbo_picks"`
+	TurboWins  int `json:"turbo_wins"`
+	ProPick    int `json:"pro_pick"`
+	ProWin     int `json:"pro_win"`
+	ProBan     int `json:"pro_ban"`
+	PubPick    int `json:"pub_pick"`
+	PubWin     int `json:"pub_win"`
+}
+
+func (e *Enricher) enrichHeroStats(ctx context.Context) error {
+	if e.heroStatsURL == "" {
+		e.log.Warn("hero_stats URL not configured, skipping")
+		return nil
+	}
+
+	var stats []odHeroStats
+	if err := e.fetchJSON(ctx, e.heroStatsURL, &stats); err != nil {
+		return fmt.Errorf("fetch hero stats: %w", err)
+	}
+
+	refs := make([]postgres.HeroStatsRef, 0, len(stats))
+	for _, s := range stats {
+		if s.ID == 0 {
+			continue
+		}
+
+		var pubWR, proWR float32
+		if s.PubPick > 0 {
+			pubWR = float32(s.PubWin) / float32(s.PubPick)
+		}
+		if s.ProPick > 0 {
+			proWR = float32(s.ProWin) / float32(s.ProPick)
+		}
+
+		refs = append(refs, postgres.HeroStatsRef{
+			ID:              s.ID,
+			BaseHealth:      s.BaseHealth,
+			BaseMana:        s.BaseMana,
+			BaseArmor:       s.BaseArmor,
+			BaseMR:          s.BaseMR,
+			BaseAttackMin:   s.BaseAttackMin,
+			BaseAttackMax:   s.BaseAttackMax,
+			BaseStr:         s.BaseStr,
+			BaseAgi:         s.BaseAgi,
+			BaseInt:         s.BaseInt,
+			StrGain:         s.StrGain,
+			AgiGain:         s.AgiGain,
+			IntGain:         s.IntGain,
+			AttackRange:     s.AttackRange,
+			ProjectileSpeed: s.ProjectileSpeed,
+			AttackRate:      s.AttackRate,
+			MoveSpeed:       s.MoveSpeed,
+			TurnRate:        s.TurnRate,
+			CMEnabled:       s.CMEnabled,
+			TurboPicks:      s.TurboPicks,
+			TurboWins:       s.TurboWins,
+			ProPicks:        s.ProPick,
+			ProWins:         s.ProWin,
+			ProBans:         s.ProBan,
+			PubPicks:        s.PubPick,
+			PubWins:         s.PubWin,
+			PubWinRate:      pubWR,
+			ProWinRate:      proWR,
+		})
+	}
+
+	if err := e.repo.UpsertHeroStats(ctx, refs); err != nil {
+		return fmt.Errorf("upsert hero_stats: %w", err)
+	}
+
+	e.log.Info("enriched hero stats", "count", len(refs))
+	return nil
+}

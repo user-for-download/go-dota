@@ -55,7 +55,7 @@ VALUES (0, 'no_hero', 'No Hero')
 -- /heroes metadata; refreshed independently.
 -- =====================================================
 CREATE TABLE IF NOT EXISTS hero_stats (
-                                          id                      SMALLINT PRIMARY KEY REFERENCES heroes(id) ON DELETE CASCADE,
+    id                      SMALLINT PRIMARY KEY REFERENCES heroes(id) ON DELETE CASCADE,
     base_health             INTEGER,
     base_mana               INTEGER,
     base_armor              REAL,
@@ -105,20 +105,33 @@ CREATE TABLE IF NOT EXISTS items (
 -- Abilities
 -- =====================================================
 CREATE TABLE IF NOT EXISTS abilities (
-                                         id             INTEGER PRIMARY KEY,
-                                         key            TEXT NOT NULL UNIQUE,
-                                         dname          TEXT NOT NULL DEFAULT '',
-                                         behavior       JSONB,
-                                         target_team    TEXT NOT NULL DEFAULT '',
-                                         description    TEXT NOT NULL DEFAULT '',
-                                         img            TEXT NOT NULL DEFAULT '',
-                                         mana_cost      TEXT NOT NULL DEFAULT '',
-                                         cooldown       TEXT NOT NULL DEFAULT '',
-                                         attrib         JSONB,
-                                         updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                                         key          TEXT PRIMARY KEY,
+                                         id           INTEGER,
+                                         dname        TEXT NOT NULL DEFAULT '',
+                                         behavior     JSONB,
+                                         target_team  TEXT NOT NULL DEFAULT '',
+                                         description  TEXT NOT NULL DEFAULT '',
+                                         img          TEXT NOT NULL DEFAULT '',
+                                         mana_cost    TEXT NOT NULL DEFAULT '',
+                                         cooldown     TEXT NOT NULL DEFAULT '',
+                                         attrib       JSONB,
+                                         is_talent    BOOLEAN NOT NULL DEFAULT FALSE,
+                                         updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
 CREATE INDEX IF NOT EXISTS idx_abilities_dname ON abilities (dname);
+DROP INDEX IF EXISTS idx_abilities_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_abilities_id
+    ON abilities (id) WHERE id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_abilities_is_talent
+    ON abilities (is_talent)
+    WHERE is_talent = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_abilities_talent_key
+    ON abilities (key)
+    WHERE is_talent = TRUE;
+
 -- =====================================================
 -- Patches
 -- =====================================================
@@ -129,6 +142,41 @@ CREATE TABLE IF NOT EXISTS patches (
                                        release_epoch   BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_patches_release_epoch ON patches(release_epoch DESC);
+
+-- =====================================================
+-- regions
+-- =====================================================
+CREATE TABLE IF NOT EXISTS regions (
+                                       id      SMALLINT PRIMARY KEY,
+                                       name    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_regions_name ON regions(name);
+
+INSERT INTO regions (id, name) VALUES
+    (1,  'US WEST'),
+    (2,  'US EAST'),
+    (3,  'EUROPE'),
+    (5,  'SINGAPORE'),
+    (6,  'DUBAI'),
+    (7,  'AUSTRALIA'),
+    (8,  'STOCKHOLM'),
+    (9,  'AUSTRIA'),
+    (10, 'BRAZIL'),
+    (11, 'SOUTHAFRICA'),
+    (12, 'PW TELECOM SHANGHAI'),
+    (13, 'PW UNICOM'),
+    (14, 'CHILE'),
+    (15, 'PERU'),
+    (16, 'INDIA'),
+    (17, 'PW TELECOM GUANGDONG'),
+    (18, 'PW TELECOM ZHEJIANG'),
+    (19, 'JAPAN'),
+    (20, 'PW TELECOM WUHAN'),
+    (25, 'PW UNICOM TIANJIN'),
+    (37, 'TAIWAN'),
+    (38, 'ARGENTINA')
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
 
 -- =====================================================
 -- Leagues / tournaments
@@ -291,7 +339,7 @@ CREATE TABLE IF NOT EXISTS matches (
     lobby_type              SMALLINT,
     game_mode               SMALLINT,
     cluster                 SMALLINT,
-    region                  SMALLINT,
+    region                  SMALLINT REFERENCES regions(id) ON DELETE SET NULL,
     skill                   SMALLINT,
     engine                  SMALLINT,
     human_players           SMALLINT,

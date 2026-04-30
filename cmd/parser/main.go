@@ -30,6 +30,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	postgresstore.MigrationsDir = cfg.MigrationsDir
+
 	redisstore.SetRawDataTTL(cfg.RawDataTTLSeconds)
 	httpx.SetDefaultMaxPoolSize(cfg.MaxPoolSize)
 
