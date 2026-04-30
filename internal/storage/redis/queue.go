@@ -9,19 +9,13 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/user-for-download/go-dota/internal/models"
 )
 
 const (
-	parseQueueKey       = "parse_queue"
-	failedTasksQueueKey = "failed_queue"
-	permanentDLQKey     = "permanent_failed_queue"
-	rawDataKeyPrefix    = "raw_data:"
-	fetchQueueKey       = "fetch_queue"
-	fetchDLQKey         = "fetch_dlq"
-	seenSetFetchKey     = "seen_fetch_ids"
-	seenSetParseKey     = "seen_parse_ids"
-	retryCountPrefix    = "retry_count:"
+	rawDataKeyPrefix = "raw_data:"
+	seenSetFetchKey  = "seen_fetch_ids"
+	seenSetParseKey  = "seen_parse_ids"
+	retryCountPrefix = "retry_count:"
 )
 
 var (
@@ -37,107 +31,21 @@ func SetRawDataTTL(seconds int) {
 	}
 }
 
-func (c *Client) PushFetchTask(ctx context.Context, task models.FetchTask) error {
-	data, err := json.Marshal(task)
-	if err != nil {
-		return fmt.Errorf("marshal task: %w", err)
-	}
-	if err := c.rdb.RPush(ctx, fetchQueueKey, data).Err(); err != nil {
-		return fmt.Errorf("rpush fetch_queue: %w", err)
-	}
-	return nil
-}
+// =====================================================================
+// Raw Data (Payload) Storage - used by stream-ased workers
+// =====================================================================
 
-var pushFetchTaskCappedScript = goredis.NewScript(`
-	local queueKey = KEYS[1]
-	local data = ARGV[1]
-	local maxQueueSize = tonumber(ARGV[2])
-	local current = redis.call("LLEN", queueKey)
-	if current >= maxQueueSize then
-		return 0
-	end
-	redis.call("RPUSH", queueKey, data)
-	return 1
-`)
+const maxPayloadBytes = 10 << 20 // 10MB
 
-func (c *Client) PushFetchTaskWithCap(ctx context.Context, task models.FetchTask, maxQueueSize int64) (bool, error) {
-	data, err := json.Marshal(task)
-	if err != nil {
-		return false, fmt.Errorf("marshal task: %w", err)
-	}
-	result, err := pushFetchTaskCappedScript.Run(ctx, c.rdb, []string{fetchQueueKey}, string(data), maxQueueSize).Result()
-	if err != nil {
-		return false, fmt.Errorf("push fetch task capped: %w", err)
-	}
-	return result.(int64) == 1, nil
-}
-
-func (c *Client) PopFetchTask(ctx context.Context) (models.FetchTask, error) {
-	result, err := c.rdb.BLPop(ctx, 5*time.Second, fetchQueueKey).Result()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return models.FetchTask{}, fmt.Errorf("no task in queue")
-		}
-		return models.FetchTask{}, fmt.Errorf("blpop fetch_queue: %w", err)
-	}
-	if len(result) < 2 {
-		return models.FetchTask{}, fmt.Errorf("unexpected result length")
-	}
-	var task models.FetchTask
-	if err := json.Unmarshal([]byte(result[1]), &task); err != nil {
-		return models.FetchTask{}, fmt.Errorf("unmarshal task: %w", err)
-	}
-	return task, nil
-}
-
-func (c *Client) PushParseTask(ctx context.Context, taskID string) error {
-	if err := c.rdb.RPush(ctx, parseQueueKey, taskID).Err(); err != nil {
-		return fmt.Errorf("rpush parse_queue: %w", err)
-	}
-	return nil
-}
-
-func (c *Client) PopParseTask(ctx context.Context) (string, error) {
-	result, err := c.rdb.BLPop(ctx, 5*time.Second, parseQueueKey).Result()
-	if err != nil {
-		if errors.Is(err, goredis.Nil) {
-			return "", fmt.Errorf("no task in queue")
-		}
-		return "", fmt.Errorf("blpop parse_queue: %w", err)
-	}
-	if len(result) < 2 {
-		return "", fmt.Errorf("unexpected result length")
-	}
-	return result[1], nil
-}
+var ErrPayloadTooLarge = errors.New("payload exceeds maximum size")
 
 func (c *Client) StoreRawData(ctx context.Context, taskID string, data []byte) error {
+	if len(data) > maxPayloadBytes {
+		return fmt.Errorf("%w: %d bytes", ErrPayloadTooLarge, len(data))
+	}
 	key := rawDataKeyPrefix + taskID
 	if err := c.rdb.Set(ctx, key, data, rawDataTTL).Err(); err != nil {
 		return fmt.Errorf("set raw_data:%s: %w", taskID, err)
-	}
-	return nil
-}
-
-var enqueueRawDataScript = goredis.NewScript(`
-	local rawKey = KEYS[1]
-	local parseKey = KEYS[2]
-	local taskID = ARGV[1]
-	local data = ARGV[2]
-	local ttl = tonumber(ARGV[3])
-
-	redis.call("SET", rawKey, data, "EX", ttl)
-	redis.call("RPUSH", parseKey, taskID)
-	return 1
-`)
-
-func (c *Client) AtomicEnqueueRawData(ctx context.Context, taskID string, data []byte) error {
-	rawKey := rawDataKeyPrefix + taskID
-	ttlSeconds := int(rawDataTTL.Seconds())
-
-	_, err := enqueueRawDataScript.Run(ctx, c.rdb, []string{rawKey, parseQueueKey}, taskID, string(data), ttlSeconds).Result()
-	if err != nil {
-		return fmt.Errorf("atomic enqueue: %w", err)
 	}
 	return nil
 }
@@ -151,7 +59,7 @@ func (c *Client) GetRawData(ctx context.Context, taskID string) (json.RawMessage
 		}
 		return nil, fmt.Errorf("get raw_data:%s: %w", taskID, err)
 	}
-	return json.RawMessage(result), nil
+	return result, nil
 }
 
 func (c *Client) DeleteRawData(ctx context.Context, taskID string) error {
@@ -170,30 +78,9 @@ func (c *Client) ExtendRawDataTTL(ctx context.Context, taskID string) error {
 	return nil
 }
 
-func (c *Client) PushFailedTask(ctx context.Context, taskID string) error {
-	if err := c.rdb.LPush(ctx, failedTasksQueueKey, taskID).Err(); err != nil {
-		return fmt.Errorf("lpush failed_tasks_queue: %w", err)
-	}
-	return nil
-}
-
-func (c *Client) PushPermanentFailedTask(ctx context.Context, taskID string) error {
-	if err := c.rdb.RPush(ctx, permanentDLQKey, taskID).Err(); err != nil {
-		return fmt.Errorf("rpush permanent_failed_queue: %w", err)
-	}
-	return nil
-}
-
-func (c *Client) PushFetchDLQTask(ctx context.Context, task models.FetchTask) error {
-	data, err := json.Marshal(task)
-	if err != nil {
-		return fmt.Errorf("marshal dlq task: %w", err)
-	}
-	if err := c.rdb.RPush(ctx, fetchDLQKey, data).Err(); err != nil {
-		return fmt.Errorf("rpush fetch_dlq: %w", err)
-	}
-	return nil
-}
+// =====================================================================
+// Retry Count Tracking - used by stream-based parser
+// =====================================================================
 
 func retryCountKey(taskID string) string {
 	return retryCountPrefix + taskID
@@ -229,57 +116,9 @@ func (c *Client) IncrementRetryCount(ctx context.Context, taskID string) error {
 	return nil
 }
 
-func (c *Client) RequeueFailedTasks(ctx context.Context) (int64, error) {
-	return c.RequeueFailedTasksBatch(ctx, 100)
-}
-
-var requeueFailedTasksScript = goredis.NewScript(`
-	local failedKey = KEYS[1]
-	local parseKey = KEYS[2]
-	local permKey = KEYS[3]
-	local retryPrefix = ARGV[1]
-	local maxRetries = tonumber(ARGV[2])
-	local batchSize = tonumber(ARGV[3])
-
-	local count = 0
-	for i = 1, batchSize do
-		local taskID = redis.call("LPOP", failedKey)
-		if not taskID then
-			break
-		end
-
-		local retryKey = retryPrefix .. taskID
-		local retryCount = tonumber(redis.call("GET", retryKey) or "0")
-
-		-- retryCount is incremented by Go BEFORE push to failed_queue
-		-- retryCount=1 means this was the 1st failure, so allow up to maxRetries failures
-		-- e.g., maxRetries=3: fail at 1,2,3 → requeue; fail at 4 → permanent
-		if retryCount > maxRetries then
-			redis.call("RPUSH", permKey, taskID)
-			redis.call("DEL", retryKey)
-		else
-			redis.call("RPUSH", parseKey, taskID)
-		end
-		count = count + 1
-	end
-	return count
-`)
-
-func (c *Client) RequeueFailedTasksBatch(ctx context.Context, batchSize int) (int64, error) {
-	if batchSize <= 0 {
-		batchSize = 100
-	}
-
-	result, err := requeueFailedTasksScript.Run(
-		ctx, c.rdb,
-		[]string{failedTasksQueueKey, parseQueueKey, permanentDLQKey},
-		retryCountPrefix, c.cfg.MaxRetryCount, batchSize,
-	).Result()
-	if err != nil {
-		return 0, fmt.Errorf("requeue failed tasks: %w", err)
-	}
-	return result.(int64), nil
-}
+// =====================================================================
+// Deduplication Sets - used by stream-based workers
+// =====================================================================
 
 func (c *Client) MarkFetchIDSeen(ctx context.Context, id string) error {
 	pipe := c.rdb.Pipeline()
@@ -297,7 +136,6 @@ func (c *Client) MarkFetchIDSeenBatch(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// Convert []string to []interface{} for go-redis
 	iface := make([]interface{}, len(ids))
 	for i, id := range ids {
 		iface[i] = id
@@ -323,8 +161,4 @@ func (c *Client) IsFetchIDSeen(ctx context.Context, id string) (bool, error) {
 
 func (c *Client) IsParseIDSeen(ctx context.Context, id string) (bool, error) {
 	return c.rdb.SIsMember(ctx, seenSetParseKey, id).Result()
-}
-
-func (c *Client) GetQueueLen(ctx context.Context) (int64, error) {
-	return c.rdb.LLen(ctx, fetchQueueKey).Result()
 }

@@ -86,9 +86,8 @@ func TestIsValidProxyScheme(t *testing.T) {
 	}{
 		{"http", "http://proxy.example.com:8080", true},
 		{"https", "https://proxy.example.com:8080", true},
-		{"socks5", "socks5://proxy.example.com:1080", true},
-		{"uppercase SOCKS5", "SOCKS5://proxy.example.com", true},
-		{"socks4 invalid", "socks4://proxy.example.com:1080", false},
+		{"socks5 not supported", "socks5://proxy.example.com:1080", false},
+		{"socks4 not supported", "socks4://proxy.example.com:1080", false},
 		{"ftp invalid", "ftp://proxy.example.com", false},
 		{"ip:port format", "proxy.example.com:8080", true},
 		{"ip:port without port", "proxy.example.com", false},
@@ -163,9 +162,9 @@ func TestParseTextProxies(t *testing.T) {
 			want:  []string{"http://proxy.example.com:8080"},
 		},
 		{
-			name:  "socks5 without scheme",
+			name:  "socks5 not supported",
 			body:  "socks5://proxy.example.com:1080",
-			want:  []string{"socks5://proxy.example.com:1080"},
+			want:  []string{},
 		},
 		{
 			name:  "skip json",
@@ -262,9 +261,9 @@ func TestParseLocalProxies(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "socks5 preserved",
+			name:    "socks5 not supported",
 			data:    `{"proxies": [{"alive": true, "proxy": "socks5://proxy.com"}]}`,
-			want:    []string{"socks5://proxy.com"},
+			want:    []string{},
 			wantErr: false,
 		},
 	}

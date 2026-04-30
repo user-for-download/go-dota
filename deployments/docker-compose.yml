@@ -106,6 +106,8 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
+      USE_REDIS_STREAMS: "true"
+      PAYLOAD_STORE: "redis"
       COLLECTOR_WORKERS: "10"
       SKIP_TLS_VERIFY: "false"
 

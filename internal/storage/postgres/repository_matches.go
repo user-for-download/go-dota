@@ -197,7 +197,7 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 			p.Stuns, p.ObsPlaced, p.SenPlaced, p.CreepsStacked, p.CampsStacked,
 			p.RunePickups, intBoolPtr(p.FirstbloodClaimed), p.TeamfightParticipation,
 			p.TowersKilled, p.RoshansKilled, p.ObserversPlaced, p.LeaverStatus,
-			int32SliceJSON(p.GoldT), int32SliceJSON(p.XPT), int32SliceJSON(p.LHT), int32SliceJSON(p.DNT), int32SliceJSON(p.Times),
+			p.GoldT, p.XPT, p.LHT, p.DNT, p.Times,
 			p.ThrowGold, p.ComebackGold, p.LossGold, p.WinGold,
 		)
 	}
@@ -205,10 +205,17 @@ func replacePlayerMatchesTx(ctx context.Context, tx pgx.Tx, m *models.Match) err
 	valuesClause := strings.Join(placeholders, ", ")
 	cols := strings.Join(constCols, ", ")
 
-	// Build the SET clause for ON CONFLICT - exclude PK columns from update
-	setClauses := make([]string, 0, len(constCols)-3) // exclude match_id, player_slot, start_time
-	for _, c := range constCols[3:] {                 // skip PK columns
-		setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", c, c))
+// Build the SET clause for ON CONFLICT - exclude PK columns from update.
+	// Use COALESCE for nullable identity-like fields so NULL in EXCLUDED
+	// does not overwrite an existing value on re-ingest.
+	setClauses := make([]string, 0, len(constCols)-3) // exclude match_id, player_slot, start_Time
+	for _, c := range constCols[3:] {                  // skip PK columns
+		switch c {
+		case "account_id":
+			setClauses = append(setClauses, fmt.Sprintf("%s = COALESCE(EXCLUDED.%s, player_matches.%s)", c, c, c))
+		default:
+			setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", c, c))
+		}
 	}
 	setClause := strings.Join(setClauses, ", ")
 

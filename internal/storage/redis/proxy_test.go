@@ -8,7 +8,6 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
-	"github.com/user-for-download/go-dota/internal/models"
 )
 
 func setupRedisContainer(ctx context.Context, t *testing.T) (*Client, func()) {
@@ -154,46 +153,6 @@ func TestGetWeightedRandomProxyEmpty(t *testing.T) {
 	client.rdb.Del(ctx, "proxy_pool")
 }
 
-func TestPushFetchTask(t *testing.T) {
-	ctx := context.Background()
-	client, cleanup := setupRedisContainer(ctx, t)
-	defer cleanup()
-
-	task := models.FetchTask{MatchID: "12345", URL: "https://example.com/12345"}
-	err := client.PushFetchTask(ctx, task)
-	if err != nil {
-		t.Fatalf("PushFetchTask() error = %v", err)
-	}
-
-	popped, err := client.PopFetchTask(ctx)
-	if err != nil {
-		t.Fatalf("PopFetchTask() error = %v", err)
-	}
-	if popped.MatchID != task.MatchID {
-		t.Errorf("got MatchID %q, want %q", popped.MatchID, task.MatchID)
-	}
-}
-
-func TestPushParseTask(t *testing.T) {
-	ctx := context.Background()
-	client, cleanup := setupRedisContainer(ctx, t)
-	defer cleanup()
-
-	taskID := "test-uuid-001"
-	err := client.PushParseTask(ctx, taskID)
-	if err != nil {
-		t.Fatalf("PushParseTask() error = %v", err)
-	}
-
-	poppedID, err := client.PopParseTask(ctx)
-	if err != nil {
-		t.Fatalf("PopParseTask() error = %v", err)
-	}
-	if poppedID != taskID {
-		t.Errorf("got TaskID %q, want %q", poppedID, taskID)
-	}
-}
-
 func TestStoreRawData(t *testing.T) {
 	ctx := context.Background()
 	client, cleanup := setupRedisContainer(ctx, t)
@@ -247,37 +206,6 @@ func TestAtomicRateLimit(t *testing.T) {
 	}
 
 	client.rdb.Del(ctx, minKey, dayKey)
-}
-
-func TestRequeueFailedTasks(t *testing.T) {
-	ctx := context.Background()
-	client, cleanup := setupRedisContainer(ctx, t)
-	defer cleanup()
-
-	client.rdb.Del(ctx, failedTasksQueueKey)
-	client.rdb.Del(ctx, parseQueueKey)
-
-	err := client.PushFailedTask(ctx, "failed-1")
-	if err != nil {
-		t.Fatalf("PushFailedTask() error = %v", err)
-	}
-	err = client.PushFailedTask(ctx, "failed-2")
-	if err != nil {
-		t.Fatalf("PushFailedTask() error = %v", err)
-	}
-
-	count, err := client.RequeueFailedTasks(ctx)
-	if err != nil {
-		t.Fatalf("RequeueFailedTasks() error = %v", err)
-	}
-	if count != 2 {
-		t.Errorf("got count %d, want 2", count)
-	}
-
-	queueLen, _ := client.rdb.LLen(ctx, parseQueueKey).Result()
-	if queueLen != 2 {
-		t.Errorf("parse queue len = %d, want 2", queueLen)
-	}
 }
 
 func TestWeightedProxySelection(t *testing.T) {
@@ -457,66 +385,5 @@ func TestFetcherRedisDeduplicationPath(t *testing.T) {
 	}
 	if notSeen {
 		t.Error("IsFetchIDSeen(999) = true, want false for unmarked ID")
-	}
-}
-
-func TestFetcherQueueAndMarkFlow(t *testing.T) {
-	ctx := context.Background()
-	client, cleanup := setupRedisContainer(ctx, t)
-	defer cleanup()
-
-	client.rdb.Del(ctx, seenSetFetchKey)
-	client.rdb.Del(ctx, seenSetParseKey)
-	client.rdb.Del(ctx, fetchQueueKey)
-
-	queueLen, _ := client.GetQueueLen(ctx)
-	if queueLen != 0 {
-		t.Errorf("initial queueLen = %d, want 0", queueLen)
-	}
-
-	task := models.FetchTask{MatchID: "555", URL: "https://api.example.com/555"}
-	err := client.PushFetchTask(ctx, task)
-	if err != nil {
-		t.Fatalf("PushFetchTask() error = %v", err)
-	}
-
-	err = client.MarkFetchIDSeen(ctx, "555")
-	if err != nil {
-		t.Fatalf("MarkFetchIDSeen() error = %v", err)
-	}
-
-	seen, _ := client.IsFetchIDSeen(ctx, "555")
-	if !seen {
-		t.Error("IsFetchIDSeen(555) = false, want true after mark")
-	}
-
-	queueLen2, _ := client.GetQueueLen(ctx)
-	if queueLen2 != 1 {
-		t.Errorf("queueLen2 = %d, want 1", queueLen2)
-	}
-}
-
-func TestFetcherParseFlow(t *testing.T) {
-	ctx := context.Background()
-	client, cleanup := setupRedisContainer(ctx, t)
-	defer cleanup()
-
-	client.rdb.Del(ctx, parseQueueKey)
-	client.rdb.Del(ctx, seenSetParseKey)
-
-	taskID := "parse-task-001"
-	err := client.PushParseTask(ctx, taskID)
-	if err != nil {
-		t.Fatalf("PushParseTask() error = %v", err)
-	}
-
-	err = client.MarkParseIDSeen(ctx, taskID)
-	if err != nil {
-		t.Fatalf("MarkParseIDSeen() error = %v", err)
-	}
-
-	seen, _ := client.IsParseIDSeen(ctx, taskID)
-	if !seen {
-		t.Error("IsParseIDSeen(taskID) = false, want true after mark")
 	}
 }

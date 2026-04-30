@@ -38,14 +38,7 @@ func main() {
 	}()
 
 	refreshInterval := time.Duration(cfg.ProxyRefreshMin) * time.Minute
-	pm := worker.NewProxyManagerWithConfig(
-		redisClient,
-		cfg.ProxyProviderURL,
-		cfg.HealthCheckURL,
-		refreshInterval,
-		log,
-		cfg.ProxyLocalFile,
-	)
+	pm := worker.NewProxyManagerFromConfig(redisClient, cfg, refreshInterval, log, cfg.ProxyLocalFile)
 
 	if err := pm.Run(ctx); err != nil {
 		log.Error("proxy manager error", "error", err)

@@ -46,6 +46,8 @@ func main() {
 
 	redisClient, err := redisstore.NewClientWithConfig(ctx, cfg.RedisURL, redisstore.ClientConfig{
 		MaxRetryCount: cfg.MaxRetries,
+		MaxReqPerMin:  cfg.MaxProxyReqPerMin,
+		MaxReqPerDay:  cfg.MaxProxyReqPerDay,
 	})
 	if err != nil {
 		log.Error("failed to connect to redis", "error", err)
@@ -80,9 +82,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	fetcher := worker.NewFetcher(
-		redisClient, repo, sqlPath, log,
-		cfg.MaxQueueSize, cfg.MaxProxyFails,
+	fetcher := worker.NewStreamFetcher(
+		redisClient, repo, sqlPath, log, cfg,
 	)
 
 	for {

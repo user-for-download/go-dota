@@ -9,7 +9,6 @@ export BUILDX_BAKE_ENTITLEMENTS_FS=0
 
 COMPOSE := docker compose -p $(PROJECT_NAME) -f $(COMPOSE_FILE) --profile all
 BAKE := docker buildx bake -f $(BAKE_FILE)
-
 .PHONY: help clean build rebuild up upd down downv restart restartd logs ps metrics \
         build-svc logs-svc shell-db shell-redis prepare-proxy armageddon
 
@@ -20,7 +19,7 @@ clean: ## Remove BuildKit build cache
 	docker buildx prune -af
 
 build: ## Build all service images locally using cache
-	$(BAKE) --load --set "*.tags=deployments-*:$(TAG)"
+	$(BAKE) --load
 
 rebuild: ## Force-rebuild all images locally
 	$(BAKE) --load --no-cache

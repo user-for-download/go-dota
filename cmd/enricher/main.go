@@ -60,13 +60,14 @@ func main() {
 
 	// Direct mapping - cleaner than checking each string individually
 	enricherCfg := worker.EnricherConfig{
-		HeroesURL:     cfg.EnricherHeroesURL,
-		LeaguesURL:    cfg.EnricherLeaguesURL,
-		TeamsURL:      cfg.EnricherTeamsURL,
-		ItemsURL:      cfg.EnricherItemsURL,
-		GameModesURL:  cfg.EnricherGameModesURL,
-		LobbyTypesURL: cfg.EnricherLobbyTypesURL,
-		PatchesURL:    cfg.EnricherPatchesURL,
+		HeroesURL:      cfg.EnricherHeroesURL,
+		LeaguesURL:     cfg.EnricherLeaguesURL,
+		TeamsURL:       cfg.EnricherTeamsURL,
+		ItemsURL:       cfg.EnricherItemsURL,
+		GameModesURL:   cfg.EnricherGameModesURL,
+		LobbyTypesURL:  cfg.EnricherLobbyTypesURL,
+		PatchesURL:     cfg.EnricherPatchesURL,
+		SkipTLSVerify:  cfg.SkipTLSVerify,
 	}
 
 	enricher := worker.NewEnricher(rdb, repo, log, enricherCfg)

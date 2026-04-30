@@ -94,8 +94,9 @@ func (pm *PartitionManager) ensureForwardPartitions(ctx context.Context) (int, e
 	}
 
 	created := 0
+	currentQuarterStart := time.Date(now.Year(), ((now.Month()-1)/3)*3+1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < pm.maxAheadQuarters; i++ {
-		target := time.Date(now.Year(), now.Month()+time.Month(i*3), 1, 0, 0, 0, 0, time.UTC)
+		target := currentQuarterStart.AddDate(0, i*3, 0)
 		name := postgres.QuarterPartitionName(target)
 		if _, ok := have[name]; ok {
 			continue

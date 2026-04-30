@@ -32,6 +32,13 @@ type Config struct {
 	// Raw data TTL in seconds (default 2 hours)
 	RawDataTTLSeconds int `env:"RAW_DATA_TTL_SECONDS" env-default:"7200"`
 
+	// Redis Streams configuration
+	StreamBatchSize int `env:"STREAM_BATCH_SIZE" env-default:"10"`
+	StreamBlockMS   int `env:"STREAM_BLOCK_MS" env-default:"5000"`
+
+	// Payload storage backend (redis or postgres)
+	PayloadStore string `env:"PAYLOAD_STORE" env-default:"redis"`
+
 	// Enricher endpoints
 	EnricherHeroesURL     string `env:"ENRICHER_HEROES_URL" env-default:"https://api.opendota.com/api/heroes"`
 	EnricherLeaguesURL    string `env:"ENRICHER_LEAGUES_URL" env-default:"https://api.opendota.com/api/leagues"`

@@ -63,17 +63,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	collector := worker.NewCollector(
+	opts := httpx.DefaultOptions()
+	opts.SkipTLSVerify = cfg.SkipTLSVerify
+	pool := httpx.NewTransportPool(opts)
+	httpClient := httpx.NewProxiedClient(pool, 30*time.Second)
+
+	redisstore.SetRawDataTTL(cfg.RawDataTTLSeconds)
+	payloadStore := worker.NewRedisPayloadStore(redisClient)
+	collector := worker.NewStreamCollector(
 		redisClient,
-		cfg.CollectorWorkers,
+		payloadStore,
+		httpClient,
 		log,
-		cfg.SkipTLSVerify,
-		cfg.MaxProxyFails,
-		cfg.CollectorMaxRetries,
-		cfg.CollectorMaxRateLimitRetries,
-		cfg.MaxQueueSize,
+		cfg,
 	)
 
-	collector.Run(ctx)
+	if err := collector.Run(ctx); err != nil {
+		log.Error("collector error", "error", err)
+	}
 	log.Info("collector main loop exiting")
 }

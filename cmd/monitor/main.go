@@ -18,6 +18,7 @@ import (
 
 	"github.com/user-for-download/go-dota/internal/config"
 	"github.com/user-for-download/go-dota/internal/logger"
+	"github.com/user-for-download/go-dota/internal/pipeline"
 	"github.com/user-for-download/go-dota/internal/storage/postgres"
 )
 
@@ -115,25 +116,25 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 type metricsOutput struct {
-	RedisFetchQueue           int64            `json:"redis_fetch_queue"`
-	RedisParseQueue           int64            `json:"redis_parse_queue"`
-	RedisFailedQueue          int64            `json:"redis_failed_queue"`
-	RedisPermanentFailedQueue int64           `json:"redis_permanent_failed_queue"`
-	MatchesCount              int64            `json:"matches_count"`
-	PlayerMatchesCount        int64            `json:"player_matches_count"`
-	ParsedMatchesCount        int64            `json:"parsed_matches_count"`
-	FetcherLastRunTS          int64            `json:"fetcher_last_run_ts,omitempty"`
-	FetcherLastRunDiscovered  int              `json:"fetcher_last_run_discovered,omitempty"`
-	FetcherLastRunNewInDB     int              `json:"fetcher_last_run_new_in_db,omitempty"`
-	FetcherLastRunPushed      int              `json:"fetcher_last_run_pushed,omitempty"`
-	ParserRetryCountAvg       float64          `json:"parser_retry_count_avg,omitempty"`
-	DLQOldestAgeSeconds       int64            `json:"dlq_oldest_age_seconds,omitempty"`
-	IngestSuccessTotal        int64            `json:"ingest_success_total"`
-	IngestFailedTotal         int64            `json:"ingest_failed_total"`
-	ParseFailedTotal          int64            `json:"parse_failed_total"`
-	IngestFailedByKind        map[string]int64 `json:"ingest_failed_by_kind,omitempty"`
-	LastFailedSample          string           `json:"last_failed_sample,omitempty"`
-	Errors                    []string         `json:"errors,omitempty"`
+	RedisFetchStreamLen    int64 `json:"redis_fetch_stream_len"`
+	RedisParseStreamLen    int64 `json:"redis_parse_stream_len"`
+	FetchPendingCount     int64 `json:"fetch_pending_count"`
+	ParsePendingCount     int64 `json:"parse_pending_count"`
+	FetchDLQLen           int64 `json:"fetch_dlq_len"`
+	ParseDLQLen           int64 `json:"parse_dlq_len"`
+	MatchesCount          int64 `json:"matches_count"`
+	PlayerMatchesCount    int64 `json:"player_matches_count"`
+	ParsedMatchesCount    int64 `json:"parsed_matches_count"`
+	FetcherLastRunTS       int64 `json:"fetcher_last_run_ts,omitempty"`
+	FetcherLastRunDiscovered int  `json:"fetcher_last_run_discovered,omitempty"`
+	FetcherLastRunNewInDB int  `json:"fetcher_last_run_new_in_db,omitempty"`
+	FetcherLastRunPushed   int  `json:"fetcher_last_run_pushed,omitempty"`
+	IngestSuccessTotal    int64 `json:"ingest_success_total"`
+	IngestFailedTotal     int64 `json:"ingest_failed_total"`
+	ParseFailedTotal      int64 `json:"parse_failed_total"`
+	IngestFailedByKind    map[string]int64 `json:"ingest_failed_by_kind,omitempty"`
+	LastFailedSample      string           `json:"last_failed_sample,omitempty"`
+	Errors                []string         `json:"errors,omitempty"`
 }
 
 func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
@@ -145,10 +146,10 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 
 	pipe := h.rdb.Pipeline()
 	lastRun := pipe.Get(ctx, "fetcher:last_run")
-	fetchQ := pipe.LLen(ctx, "fetch_queue")
-	parseQ := pipe.LLen(ctx, "parse_queue")
-	failedQ := pipe.LLen(ctx, "failed_queue")
-	permFailedQ := pipe.LLen(ctx, "permanent_failed_queue")
+	fetchStreamLen := pipe.XLen(ctx, pipeline.FetchTasksStream)
+	parseStreamLen := pipe.XLen(ctx, pipeline.ParseTasksStream)
+	fetchDLQLen := pipe.XLen(ctx, pipeline.FetchDLQStream)
+	parseDLQLen := pipe.XLen(ctx, pipeline.ParseDLQStream)
 
 	_, err := pipe.Exec(ctx)
 	if err != nil && !errors.Is(err, redis.Nil) {
@@ -170,27 +171,22 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if val, err := fetchQ.Result(); err == nil {
-		out.RedisFetchQueue = val
+	if val, err := fetchStreamLen.Result(); err == nil {
+		out.RedisFetchStreamLen = val
 	}
-	if val, err := parseQ.Result(); err == nil {
-		out.RedisParseQueue = val
+	if val, err := parseStreamLen.Result(); err == nil {
+		out.RedisParseStreamLen = val
 	}
-	if val, err := failedQ.Result(); err == nil {
-		out.RedisFailedQueue = val
+	if val, err := fetchDLQLen.Result(); err == nil {
+		out.FetchDLQLen = val
 	}
-	if val, err := permFailedQ.Result(); err == nil {
-		out.RedisPermanentFailedQueue = val
+	if val, err := parseDLQLen.Result(); err == nil {
+		out.ParseDLQLen = val
 	}
 
-	// Calculate retry count average from retry_count:* keys
-	retryCountAvg, oldestAge, err := h.calculateRetryMetrics(ctx)
-	if err != nil {
-		h.log.Warn("metrics: calculate retry metrics failed", "error", err)
-	} else {
-		out.ParserRetryCountAvg = retryCountAvg
-		out.DLQOldestAgeSeconds = oldestAge
-	}
+	fetchPending, parsePending := h.getPendingCounts(ctx)
+	out.FetchPendingCount = fetchPending
+	out.ParsePendingCount = parsePending
 
 	if total, parsed, players, err := h.repo.CountMatches(ctx); err != nil {
 		h.log.Warn("metrics: CountMatches failed", "error", err)
@@ -199,11 +195,6 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 		out.MatchesCount = total
 		out.ParsedMatchesCount = parsed
 		out.PlayerMatchesCount = players
-	}
-
-	if len(errs) > 0 {
-		out.Errors = errs
-		w.WriteHeader(http.StatusInternalServerError)
 	}
 
 	ingestPipe := h.rdb.Pipeline()
@@ -226,60 +217,27 @@ func (h *handler) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	out.LastFailedSample, _ = sampleCmd.Result()
 
+	if len(errs) > 0 {
+		out.Errors = errs
+		resp, _ := json.Marshal(out)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(resp)
+		return
+	}
+
 	resp, _ := json.Marshal(out)
 	_, _ = w.Write(resp)
 }
 
-func (h *handler) calculateRetryMetrics(ctx context.Context) (avg float64, oldestAge int64, err error) {
-	const retryKeyPrefix = "retry_count:"
-	const retryTTL = 86400 // seconds, matches queue.go retryCountTTL
-	const maxRetryKeysToInspect = 1000
-
-	var totalRetry int64
-	var count int64
-	var oldestTTL int64 = -1
-
-	iter := h.rdb.Scan(ctx, 0, retryKeyPrefix+"*", 100).Iterator()
-	for iter.Next(ctx) {
-		if count >= maxRetryKeysToInspect {
-			break
-		}
-
-		key := iter.Val()
-
-		// Get retry count
-		retryStr, err := h.rdb.Get(ctx, key).Result()
-		if err != nil {
-			continue
-		}
-		retryVal, err := strconv.ParseInt(retryStr, 10, 64)
-		if err != nil {
-			continue
-		}
-		totalRetry += retryVal
-		count++
-
-		// Get TTL for oldest calculation
-		ttl, err := h.rdb.TTL(ctx, key).Result()
-		if err != nil {
-			continue
-		}
-		if ttl > 0 {
-			age := retryTTL - int64(ttl.Seconds())
-			if oldestTTL < 0 || age > oldestTTL {
-				oldestTTL = age
-			}
-		}
+func (h *handler) getPendingCounts(ctx context.Context) (fetchPending, parsePending int64) {
+	fetchResult := h.rdb.XPending(ctx, pipeline.FetchTasksStream, pipeline.CollectorGroup)
+	if p, err := fetchResult.Result(); err == nil {
+		fetchPending = p.Count
 	}
-	if err := iter.Err(); err != nil {
-		return 0, 0, err
+	parseResult := h.rdb.XPending(ctx, pipeline.ParseTasksStream, pipeline.ParserGroup)
+	if p, err := parseResult.Result(); err == nil {
+		parsePending = p.Count
 	}
-
-	if count > 0 {
-		avg = float64(totalRetry) / float64(count)
-	}
-	if oldestTTL > 0 {
-		oldestAge = oldestTTL
-	}
-	return avg, oldestAge, nil
+	return fetchPending, parsePending
 }

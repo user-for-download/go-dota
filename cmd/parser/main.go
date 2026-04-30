@@ -80,9 +80,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	parser := worker.NewParser(
-		redisClient, repo, cfg.ParserWorkers, log,
-		cfg.DLQBatchSize, cfg.DLQMaxPerTick,
+	parser := worker.NewStreamParser(
+		redisClient, repo, worker.NewRedisPayloadStore(redisClient), log, cfg,
 	)
 	if err := parser.Run(ctx); err != nil {
 		log.Error("parser error", "error", err)

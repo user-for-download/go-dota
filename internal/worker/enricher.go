@@ -32,13 +32,14 @@ type Enricher struct {
 }
 
 type EnricherConfig struct {
-	HeroesURL     string
-	LeaguesURL    string
-	TeamsURL      string
-	ItemsURL      string
-	GameModesURL  string
-	LobbyTypesURL string
-	PatchesURL    string
+	HeroesURL      string
+	LeaguesURL     string
+	TeamsURL       string
+	ItemsURL       string
+	GameModesURL   string
+	LobbyTypesURL  string
+	PatchesURL     string
+	SkipTLSVerify  bool
 }
 
 func NewEnricher(
@@ -47,7 +48,9 @@ func NewEnricher(
 	log *slog.Logger,
 	cfg EnricherConfig,
 ) *Enricher {
-	pool := httpx.NewTransportPool(httpx.DefaultOptions())
+	opts := httpx.DefaultOptions()
+	opts.SkipTLSVerify = cfg.SkipTLSVerify
+	pool := httpx.NewTransportPool(opts)
 	return &Enricher{
 		redis:         rdb,
 		repo:          repo,
@@ -132,27 +135,39 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 		}
 
 		var proxy string
+		var leaseToken string
 		isDirect := attempt == maxAttempts
+		releaseLease := func() {
+			if proxy != "" && leaseToken != "" {
+				if err := e.redis.ReleaseProxyLease(context.Background(), proxy, leaseToken); err != nil {
+					e.log.Warn("release proxy lease failed", "proxy", proxy, "error", err)
+				}
+			}
+		}
+
 		if isDirect {
 			proxy = ""
 		} else if e.redis != nil {
-			p, err := e.redis.GetWeightedRandomProxy(ctx)
+			p, token, err := e.redis.AcquireLeasedProxy(ctx, 2*time.Minute, 10)
 			if err != nil {
-				e.log.Warn("no proxy available, will try direct",
+				e.log.Warn("no free proxy available, will try direct",
 					"url", url, "attempt", attempt, "error", err)
 				isDirect = true
 			} else if !isUsableProxyURL(p) {
+				_ = e.redis.ReleaseProxyLease(context.Background(), p, token)
 				e.log.Warn("proxy pool returned malformed URL, removing",
 					"proxy", p, "url", url)
 				_ = e.redis.RemoveProxy(ctx, p)
 				continue
 			} else {
 				proxy = p
+				leaseToken = token
 			}
 		}
 
 		resp, err := e.http.Get(ctx, url, proxy)
 		if err != nil {
+			releaseLease()
 			lastErr = fmt.Errorf("attempt %d: %w", attempt, err)
 			if !isDirect && proxy != "" {
 				_ = e.redis.RecordProxyFailure(ctx, proxy, redis.DefaultMaxProxyFails)
@@ -171,11 +186,13 @@ func (e *Enricher) fetchJSON(ctx context.Context, url string, v any) error {
 			if proxy != "" {
 				_ = e.redis.RecordProxySuccess(ctx, proxy)
 			}
+			releaseLease()
 			if err := json.Unmarshal(resp.Body, v); err != nil {
 				return fmt.Errorf("unmarshal %s: %w", url, err)
 			}
 			return nil
 		case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
+			releaseLease()
 			lastErr = fmt.Errorf("attempt %d: %s status %d", attempt, url, resp.StatusCode)
 			if !isDirect && proxy != "" {
 				_ = e.redis.RecordProxyFailure(ctx, proxy, redis.DefaultMaxProxyFails)
@@ -213,7 +230,7 @@ func isUsableProxyURL(s string) bool {
 		return false
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "http", "https", "socks4", "socks5":
+	case "http", "https":
 		return true
 	}
 	return false

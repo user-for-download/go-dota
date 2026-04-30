@@ -37,17 +37,24 @@ func waitOne(ctx context.Context, log *slog.Logger, c Check) error {
 		deadline = t.C
 	}
 
+	probeTimeout := 10 * time.Second
+
 	start := time.Now()
 	last := start
 	log.Info("readiness: waiting", "dep", c.Name)
 
 	for {
-		if err := c.Probe(ctx); err == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		err := c.Probe(probeCtx)
+		cancel()
+
+		if err == nil {
 			log.Info("readiness: ready",
 				"dep", c.Name,
 				"waited", time.Since(start).Round(time.Second))
 			return nil
 		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -58,7 +65,8 @@ func waitOne(ctx context.Context, log *slog.Logger, c Check) error {
 		if time.Since(last) > 10*time.Second {
 			log.Info("readiness: still waiting",
 				"dep", c.Name,
-				"elapsed", time.Since(start).Round(time.Second))
+				"elapsed", time.Since(start).Round(time.Second),
+				"last_error", err)
 			last = time.Now()
 		}
 	}

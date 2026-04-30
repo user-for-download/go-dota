@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/user-for-download/go-dota/internal/config"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/user-for-download/go-dota/internal/httpx"
@@ -39,40 +40,32 @@ type ProxyManager struct {
 	localProxyFile   string
 	checkSemaphore   *semaphore.Weighted
 	transportPool    *httpx.TransportPool
+	skipTLSVerify    bool
 }
 
-func NewProxyManager(
+func NewProxyManagerFromConfig(
 	redisClient *redis.Client,
-	proxyProviderURL string,
-	healthCheckURL string,
+	cfg *config.Config,
 	refreshInterval time.Duration,
 	logger *slog.Logger,
+	localProxyFile string,
 ) *ProxyManager {
+	opts := httpx.DefaultOptions()
+	opts.SkipTLSVerify = cfg.SkipTLSVerify
 	if refreshInterval <= 0 {
 		refreshInterval = 15 * time.Minute
 	}
 	return &ProxyManager{
 		redisClient:      redisClient,
-		proxyProviderURL: proxyProviderURL,
-		healthCheckURL:   healthCheckURL,
+		proxyProviderURL: cfg.ProxyProviderURL,
+		healthCheckURL:   cfg.HealthCheckURL,
 		refreshInterval:  refreshInterval,
 		logger:           logger,
-		checkSemaphore:   semaphore.NewWeighted(50),
-		transportPool:    httpx.NewTransportPool(httpx.DefaultOptions()),
+		localProxyFile:   localProxyFile,
+		checkSemaphore:  semaphore.NewWeighted(50),
+		transportPool:    httpx.NewTransportPool(opts),
+		skipTLSVerify:    opts.SkipTLSVerify,
 	}
-}
-
-func NewProxyManagerWithConfig(
-	redisClient *redis.Client,
-	proxyProviderURL string,
-	healthCheckURL string,
-	refreshInterval time.Duration,
-	logger *slog.Logger,
-	localProxyFile string,
-) *ProxyManager {
-	pm := NewProxyManager(redisClient, proxyProviderURL, healthCheckURL, refreshInterval, logger)
-	pm.localProxyFile = localProxyFile
-	return pm
 }
 
 // ---------------------------------------------------------------------
@@ -123,28 +116,35 @@ func (pm *ProxyManager) Run(ctx context.Context) error {
 
 func (pm *ProxyManager) bootstrap(ctx context.Context) error {
 	pm.logger.Info("bootstrap: loading local proxy file")
+
+	if err := pm.redisClient.ClearProxies(ctx); err != nil {
+		pm.logger.Warn("bootstrap: failed to clear existing proxy pool", "error", err)
+	} else {
+		pm.logger.Info("bootstrap: cleared existing proxy pool")
+	}
+
 	locals, localErr := pm.readLocalProxies(ctx)
 
 	var providerProxies []string
 	var providerErr error
 
 	if len(locals) > 0 {
-		pm.logger.Info("bootstrap: local proxies loaded", "count", len(locals))
+		pm.logger.Info("bootstrap: local proxy candidates loaded", "count", len(locals))
 
-		// Seed Redis immediately so fetchers can start draining the queue
-		// while we talk to the provider.
-		if err := pm.redisClient.AddProxies(ctx, locals); err != nil {
-			pm.logger.Warn("bootstrap: seed redis with local proxies failed", "error", err)
-		} else {
-			pm.logger.Info("bootstrap: seeded redis with local proxies", "count", len(locals))
-		}
-
-		// Update provider list through a local proxy first.
 		if pm.proxyProviderURL != "" {
-			providerProxies, providerErr = pm.fetchFromProviderViaProxies(ctx, locals)
-			if providerErr != nil {
-				pm.logger.Warn("bootstrap: provider fetch via local proxies failed, falling back to direct",
-					"error", providerErr)
+			firstValid, ok := pm.findFirstValidProxy(ctx, locals)
+			if ok {
+				pm.logger.Info("bootstrap: first valid local proxy found", "proxy", firstValid)
+
+				providerProxies, providerErr = pm.fetchFromProviderViaProxy(ctx, firstValid)
+				if providerErr != nil {
+					pm.logger.Warn("bootstrap: provider fetch via first valid proxy failed, falling back to direct",
+						"proxy", firstValid,
+						"error", providerErr)
+					providerProxies, providerErr = pm.fetchFromProviderDirect(ctx)
+				}
+			} else {
+				pm.logger.Warn("bootstrap: no valid local proxy found, falling back to direct provider fetch")
 				providerProxies, providerErr = pm.fetchFromProviderDirect(ctx)
 			}
 		}
@@ -155,7 +155,6 @@ func (pm *ProxyManager) bootstrap(ctx context.Context) error {
 			pm.logger.Info("bootstrap: local file missing or empty")
 		}
 
-		// No locals — go direct.
 		if pm.proxyProviderURL != "" {
 			providerProxies, providerErr = pm.fetchFromProviderDirect(ctx)
 		}
@@ -177,7 +176,6 @@ func (pm *ProxyManager) bootstrap(ctx context.Context) error {
 		"valid", len(valid), "total", len(merged))
 
 	if len(valid) == 0 {
-		// Don't overwrite the seeded local set if nothing passed checks.
 		return fmt.Errorf("no proxies passed health checks")
 	}
 
@@ -186,6 +184,57 @@ func (pm *ProxyManager) bootstrap(ctx context.Context) error {
 	}
 	pm.logger.Info("bootstrap: pool published", "count", len(valid))
 	return nil
+}
+
+func (pm *ProxyManager) findFirstValidProxy(ctx context.Context, candidates []string) (string, bool) {
+	if len(candidates) == 0 {
+		return "", false
+	}
+
+	shuffled := append([]string(nil), candidates...)
+	rand.Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
+
+	for i, proxyURL := range shuffled {
+		if ctx.Err() != nil {
+			return "", false
+		}
+
+		if proxyURL == "" || !isValidProxyScheme(proxyURL) {
+			continue
+		}
+
+		if pm.checkProxy(ctx, proxyURL) {
+			return proxyURL, true
+		}
+
+		if (i+1)%25 == 0 {
+			pm.logger.Info("bootstrap: still searching valid local proxy",
+				"checked", i+1,
+				"total", len(shuffled))
+		}
+	}
+
+	return "", false
+}
+
+func (pm *ProxyManager) fetchFromProviderViaProxy(ctx context.Context, proxyURL string) ([]string, error) {
+	transport, err := pm.transportPool.GetOrCreate(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("create proxy transport: %w", err)
+	}
+
+	proxies, err := pm.fetchFromProviderWithTransport(ctx, transport)
+	if err != nil {
+		return nil, err
+	}
+
+	pm.logger.Info("provider fetched via bootstrap proxy",
+		"proxy", proxyURL,
+		"count", len(proxies))
+
+	return proxies, nil
 }
 
 // ---------------------------------------------------------------------
@@ -371,7 +420,7 @@ func isValidProxyScheme(proxyURL string) bool {
 			return false
 		}
 		scheme := strings.ToLower(u.Scheme)
-		return scheme == "http" || scheme == "https" || scheme == "socks5"
+		return scheme == "http" || scheme == "https"
 	}
 	parts := strings.Split(proxyURL, ":")
 	if len(parts) == 2 {
@@ -390,10 +439,10 @@ func (pm *ProxyManager) parseTextProxies(body []byte) []string {
 		if line == "" || strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
 			continue
 		}
-		if !strings.HasPrefix(line, "http://") &&
-			!strings.HasPrefix(line, "https://") &&
-			!strings.HasPrefix(line, "socks5://") &&
-			!strings.HasPrefix(line, "socks4://") {
+		if strings.HasPrefix(line, "socks5://") || strings.HasPrefix(line, "socks4://") {
+			continue
+		}
+		if !strings.HasPrefix(line, "http://") && !strings.HasPrefix(line, "https://") {
 			line = "http://" + line
 		}
 		if isValidProxyScheme(line) {
@@ -448,7 +497,10 @@ func (pm *ProxyManager) parseLocalProxies(data []byte) ([]string, error) {
 			continue
 		}
 		proxyURL := p.Proxy
-		if !strings.HasPrefix(proxyURL, "http") && !strings.HasPrefix(proxyURL, "socks") {
+		if strings.HasPrefix(proxyURL, "socks5://") || strings.HasPrefix(proxyURL, "socks4://") {
+			continue
+		}
+		if !strings.HasPrefix(proxyURL, "http://") && !strings.HasPrefix(proxyURL, "https://") {
 			proxyURL = "http://" + proxyURL
 		}
 		if isValidProxyScheme(proxyURL) {
@@ -503,7 +555,7 @@ func (pm *ProxyManager) checkProxy(ctx context.Context, proxyURL string) bool {
 	transport := &http.Transport{
 		Proxy:             http.ProxyURL(proxyParsed),
 		DisableKeepAlives: true,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: pm.skipTLSVerify},
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 

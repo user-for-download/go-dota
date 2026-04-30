@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -11,6 +12,7 @@ import (
 const proxyPoolKey = "proxy_pool"
 const proxyRankingKey = "proxy_ranking"
 const proxyFailurePrefix = "proxy_failures:"
+const proxyLeasePrefix = "proxy_lease:"
 
 func proxyFailureKey(proxy string) string {
 	return proxyFailurePrefix + proxy
@@ -92,8 +94,187 @@ var weightedRandomProxyScript = goredis.NewScript(`
 	if #scored > 0 then
 		return {scored[#scored][1], tostring(total)}
 	end
-	return {}
+return {}
+ `)
+
+var acquireLeasedProxyScript = goredis.NewScript(`
+	local poolKey = KEYS[1]
+	local rankingKey = KEYS[2]
+
+	local failurePrefix = ARGV[1]
+	local leasePrefix = ARGV[2]
+	local penalty = tonumber(ARGV[3])
+	local fraction = tonumber(ARGV[4])
+	local leaseTTL = tonumber(ARGV[5])
+	local token = ARGV[6]
+
+	local proxies = redis.call("SMEMBERS", poolKey)
+	if #proxies == 0 then
+		return {}
+	end
+
+	local total = 0
+	local scored = {}
+
+	for i, proxy in ipairs(proxies) do
+		local leaseKey = leasePrefix .. proxy
+		if redis.call("EXISTS", leaseKey) == 0 then
+			local score = redis.call("ZSCORE", rankingKey, proxy)
+			if not score then
+				score = 0
+			else
+				score = tonumber(score)
+				if score > 10000 then
+					score = 10000
+				elseif score < 0 then
+					score = 0
+				end
+			end
+
+			local failKey = failurePrefix .. proxy
+			local fails = redis.call("GET", failKey)
+			if fails then
+				score = math.max(0, score - tonumber(fails) * penalty)
+			end
+
+			score = math.max(0, math.min(10000, score + 10))
+			total = total + score
+			scored[#scored + 1] = {proxy, score}
+		end
+	end
+
+	if #scored == 0 or total <= 0 then
+		return {}
+	end
+
+	local threshold = fraction * total
+	local cumulative = 0
+	local selected = ""
+
+	for i, entry in ipairs(scored) do
+		cumulative = cumulative + entry[2]
+		if cumulative >= threshold then
+			selected = entry[1]
+			break
+		end
+	end
+
+	if selected == "" then
+		selected = scored[#scored][1]
+	end
+
+	local selectedLeaseKey = leasePrefix .. selected
+	local ok = redis.call("SET", selectedLeaseKey, token, "NX", "EX", leaseTTL)
+	if not ok then
+		return {}
+	end
+
+	return {selected, token}
 `)
+
+var releaseProxyLeaseScript = goredis.NewScript(`
+	local leaseKey = KEYS[1]
+	local token = ARGV[1]
+
+	if redis.call("GET", leaseKey) == token then
+		return redis.call("DEL", leaseKey)
+	end
+
+	return 0
+`)
+
+func proxyLeaseKey(proxy string) string {
+	return proxyLeasePrefix + proxy
+}
+
+func proxyLeaseToken() string {
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
+}
+
+func ttlSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 120
+	}
+
+	sec := int(d / time.Second)
+	if d%time.Second != 0 {
+		sec++
+	}
+	if sec <= 0 {
+		sec = 1
+	}
+	return sec
+}
+
+func (c *Client) AcquireLeasedProxy(
+	ctx context.Context,
+	leaseTTL time.Duration,
+	maxAttempts int,
+) (proxy string, token string, err error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		default:
+		}
+
+		token = proxyLeaseToken()
+
+		result, err := acquireLeasedProxyScript.Run(
+			ctx,
+			c.rdb,
+			[]string{proxyPoolKey, proxyRankingKey},
+			proxyFailurePrefix,
+			proxyLeasePrefix,
+			10,
+			rand.Float64(),
+			ttlSeconds(leaseTTL),
+			token,
+		).Result()
+		if err != nil {
+			return "", "", fmt.Errorf("acquire leased proxy: %w", err)
+		}
+
+		parts, ok := result.([]interface{})
+		if ok && len(parts) >= 2 {
+			p, ok1 := parts[0].(string)
+			t, ok2 := parts[1].(string)
+			if ok1 && ok2 && p != "" && t != "" {
+				return p, t, nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	return "", "", fmt.Errorf("no free proxies available in pool")
+}
+
+func (c *Client) ReleaseProxyLease(ctx context.Context, proxy string, token string) error {
+	if proxy == "" || token == "" {
+		return nil
+	}
+
+	_, err := releaseProxyLeaseScript.Run(
+		ctx,
+		c.rdb,
+		[]string{proxyLeaseKey(proxy)},
+		token,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("release proxy lease: %w", err)
+	}
+
+	return nil
+}
 
 func (c *Client) AddProxies(ctx context.Context, proxies []string) error {
 	if len(proxies) == 0 {
@@ -136,6 +317,25 @@ func (c *Client) AddProxies(ctx context.Context, proxies []string) error {
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("add proxies: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) ClearProxies(ctx context.Context) error {
+	existing, err := c.rdb.SMembers(ctx, proxyPoolKey).Result()
+	if err != nil {
+		return fmt.Errorf("read existing proxies: %w", err)
+	}
+
+	pipe := c.rdb.Pipeline()
+	pipe.Del(ctx, proxyPoolKey)
+	for _, old := range existing {
+		pipe.ZRem(ctx, proxyRankingKey, old)
+		pipe.Del(ctx, proxyFailureKey(old))
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("clear proxies: %w", err)
 	}
 	return nil
 }
